@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from .gui import MainWindow
+from .gui_async import MainWindow
 from .logging_setup import setup_logging
 
 APP_STYLE = """
