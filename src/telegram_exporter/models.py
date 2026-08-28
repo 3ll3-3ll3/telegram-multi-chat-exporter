@@ -18,6 +18,7 @@ class GroupInfo:
     username: str | None = None
     unread_count: int = 0
     read_inbox_max_id: int = 0
+    latest_message_id: int = 0
 
 
 @dataclass(slots=True)
