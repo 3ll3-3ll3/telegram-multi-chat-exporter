@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
 
 from telegram_exporter.models import GroupInfo
 from telegram_exporter.read_state import mark_unread_snapshot_read
@@ -20,8 +20,7 @@ class FakeClient:
         return True
 
 
-@pytest.mark.asyncio
-async def test_marks_exact_refreshed_unread_snapshot() -> None:
+def test_marks_exact_refreshed_unread_snapshot() -> None:
     client = FakeClient()
     group = GroupInfo(
         chat_id=-100123,
@@ -31,15 +30,14 @@ async def test_marks_exact_refreshed_unread_snapshot() -> None:
         latest_message_id=112,
     )
 
-    acknowledged = await mark_unread_snapshot_read(client, group)
+    acknowledged = asyncio.run(mark_unread_snapshot_read(client, group))
 
     assert acknowledged == 112
     assert client.entity_requests == [-100123]
     assert client.acks == [({"chat_id": -100123}, 112)]
 
 
-@pytest.mark.asyncio
-async def test_does_nothing_when_snapshot_has_no_unread_messages() -> None:
+def test_does_nothing_when_snapshot_has_no_unread_messages() -> None:
     client = FakeClient()
     group = GroupInfo(
         chat_id=-100123,
@@ -49,15 +47,14 @@ async def test_does_nothing_when_snapshot_has_no_unread_messages() -> None:
         latest_message_id=112,
     )
 
-    acknowledged = await mark_unread_snapshot_read(client, group)
+    acknowledged = asyncio.run(mark_unread_snapshot_read(client, group))
 
     assert acknowledged is None
     assert client.entity_requests == []
     assert client.acks == []
 
 
-@pytest.mark.asyncio
-async def test_does_not_move_read_marker_backwards() -> None:
+def test_does_not_move_read_marker_backwards() -> None:
     client = FakeClient()
     group = GroupInfo(
         chat_id=-100123,
@@ -67,7 +64,7 @@ async def test_does_not_move_read_marker_backwards() -> None:
         latest_message_id=118,
     )
 
-    acknowledged = await mark_unread_snapshot_read(client, group)
+    acknowledged = asyncio.run(mark_unread_snapshot_read(client, group))
 
     assert acknowledged is None
     assert client.entity_requests == []
