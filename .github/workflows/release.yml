@@ -88,17 +88,22 @@ jobs:
           Windows GUI Telegram multi-chat batch exporter.
 
           Highlights:
+          - Searchable focused workspace: the full account catalogue stays out of the main editor, and only selected working groups are shown.
           - Per-group independent export rules: custom date range, current unread, or since previous successful export.
+          - Current-unread mode is frozen to the latest catalogue-refresh snapshot, so messages arriving later are excluded from that batch.
+          - Optional per-group "mark as read after export" policy is default-off and only runs after result.json was written successfully.
+          - A failed export never changes Telegram read state; a failed read acknowledgement is reported separately without deleting the JSON.
           - Text-only export; media files are not downloaded, while text captions are preserved.
           - Each run creates an independent batch directory and each group gets its own result.json.
           - No master message database and no historical batch merging.
           - Telegram Desktop-style JSON fields for plain-text messages.
           - Telegram API credentials and session files remain local-only.
           - Automatically uses the enabled Windows system proxy (for example Clash/Mihomo at 127.0.0.1:7890) for Telegram transport.
+          - qasync-safe non-blocking login and message-dialog flow.
 
           Downloads:
           - Single EXE: easiest to run.
-          - Portable ZIP: onedir build without the PyInstaller one-file self-extraction layer; try this build if antivirus heuristics dislike the single EXE.
+          - Portable ZIP: onedir build without the PyInstaller one-file self-extraction layer.
           - SHA256SUMS.txt: integrity hashes for both assets.
 
           Validation:
@@ -106,8 +111,6 @@ jobs:
           - GUI import check passed.
           - One-file EXE smoke-test passed.
           - Portable onedir EXE smoke-test passed.
-
-          Note: these builds are not yet Authenticode-signed. The repository now documents the free SignPath Foundation OSS signing path.
           "@
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
