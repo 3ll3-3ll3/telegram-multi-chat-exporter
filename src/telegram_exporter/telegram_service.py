@@ -97,6 +97,7 @@ class TelegramService:
                         username=getattr(entity, "username", None),
                         unread_count=int(dialog.unread_count or 0),
                         read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
+                        latest_message_id=int(getattr(dialog.message, "id", 0) or 0),
                     )
                 )
         except Exception:
