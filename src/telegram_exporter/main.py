@@ -85,7 +85,12 @@ async def _run_app(app: QApplication) -> int:
     window = MainWindow()
     window.show()
     await close_event.wait()
-    await window.shutdown()
+    try:
+        await window.shutdown()
+    except Exception:
+        # Closing the GUI should never surface a PyInstaller fatal-error dialog
+        # merely because best-effort Telegram cleanup failed during Qt teardown.
+        logging.getLogger("telegram_exporter").exception("Application shutdown cleanup failed")
     return 0
 
 
