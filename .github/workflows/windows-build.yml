@@ -1,0 +1,52 @@
+name: Windows EXE
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: GUI import check
+        run: python -c "import telegram_exporter.gui; print('GUI import OK')"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter launcher.py
+
+      - name: Smoke-test packaged EXE
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD\dist\TelegramMultiChatExporter.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged EXE smoke test failed with exit code $($process.ExitCode)" }
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: TelegramMultiChatExporter-windows-x64
+          path: dist/TelegramMultiChatExporter.exe
+          if-no-files-found: error
+          retention-days: 30
