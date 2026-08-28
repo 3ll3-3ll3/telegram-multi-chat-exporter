@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 
 from PySide6.QtGui import QFont
@@ -8,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
 from .gui import MainWindow
+from .logging_setup import setup_logging
 
 APP_STYLE = """
 QWidget {
@@ -88,13 +90,19 @@ async def _run_app(app: QApplication) -> int:
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName("Telegram Multi-Chat Exporter")
-    app.setOrganizationName("WJL")
-    app.setStyle("Fusion")
-    app.setFont(QFont("Microsoft YaHei UI", 10))
-    app.setStyleSheet(APP_STYLE)
-    return asyncio.run(_run_app(app), loop_factory=QEventLoop)
+    logger = setup_logging()
+    logger.info("Starting Telegram Multi-Chat Exporter")
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("Telegram Multi-Chat Exporter")
+        app.setOrganizationName("WJL")
+        app.setStyle("Fusion")
+        app.setFont(QFont("Microsoft YaHei UI", 10))
+        app.setStyleSheet(APP_STYLE)
+        return asyncio.run(_run_app(app), loop_factory=QEventLoop)
+    except Exception:
+        logging.getLogger("telegram_exporter").exception("Fatal application error")
+        raise
 
 
 if __name__ == "__main__":

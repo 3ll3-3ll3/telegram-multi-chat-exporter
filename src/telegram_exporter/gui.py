@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, time, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -30,11 +32,15 @@ from PySide6.QtWidgets import (
 )
 from qasync import asyncSlot
 
+from .diagnostics import friendly_error_message
 from .exporter import export_group
+from .logging_setup import log_file_path
 from .models import ExportMode, GroupExportPlan, GroupInfo
-from .paths import credentials_path, session_path, settings_path, state_path
+from .paths import credentials_path, logs_dir, session_files, session_path, settings_path, state_path
 from .storage import LocalState, read_json, write_json_atomic
 from .telegram_service import ApiCredentials, TelegramService
+
+logger = logging.getLogger("telegram_exporter.gui")
 
 MODE_LABELS = {
     ExportMode.DATE_RANGE: "指定时间范围",
@@ -45,18 +51,22 @@ MODE_BY_LABEL = {v: k for k, v in MODE_LABELS.items()}
 
 
 class CredentialsDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial: ApiCredentials | None = None):
         super().__init__(parent)
         self.setWindowTitle("Telegram API 配置")
-        self.resize(480, 190)
+        self.resize(520, 220)
         layout = QFormLayout(self)
         self.api_id = QSpinBox()
+        self.api_id.setMinimum(1)
         self.api_id.setMaximum(2_147_483_647)
         self.api_hash = QLineEdit()
         self.api_hash.setEchoMode(QLineEdit.Password)
+        if initial:
+            self.api_id.setValue(initial.api_id)
+            self.api_hash.setText(initial.api_hash)
         info = QLabel(
-            '首次使用需要你自己的 Telegram API 凭据。请前往 '
-            '<a href="https://my.telegram.org">my.telegram.org</a> → API Development Tools 获取。'
+            '请使用 <a href="https://my.telegram.org">my.telegram.org</a> → API development tools 中'
+            '你自己的 <b>api_id</b> 与 <b>api_hash</b>。这里不是 BotFather 的 Bot Token。'
         )
         info.setOpenExternalLinks(True)
         info.setWordWrap(True)
@@ -76,7 +86,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Telegram 多群批次导出器")
-        self.resize(1220, 760)
+        self.resize(1260, 780)
         self.groups: list[GroupInfo] = []
         self.state = LocalState(state_path())
         self.service: TelegramService | None = None
@@ -88,12 +98,18 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         self.connect_btn = QPushButton("连接 Telegram")
+        self.api_btn = QPushButton("API 设置")
+        self.reset_login_btn = QPushButton("重置登录")
+        self.logs_btn = QPushButton("打开日志目录")
         self.refresh_btn = QPushButton("刷新群组")
         self.refresh_btn.setEnabled(False)
         self.output_btn = QPushButton("选择输出目录")
         self.output_label = QLabel(str(self._default_output_dir()))
         self.output_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.connect_btn)
+        top.addWidget(self.api_btn)
+        top.addWidget(self.reset_login_btn)
+        top.addWidget(self.logs_btn)
         top.addWidget(self.refresh_btn)
         top.addWidget(self.output_btn)
         top.addStretch(1)
@@ -102,7 +118,7 @@ class MainWindow(QMainWindow):
 
         hint = QLabel(
             "一次可导出多个群；每个群可单独选择『指定时间范围 / 当前未读 / 上次导出以后』。"
-            "每次导出都是独立批次，不会合并历史消息。"
+            "每次导出都是独立批次，不会合并历史消息。连接失败时请先查看错误提示；详细信息会写入本地日志。"
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -135,12 +151,17 @@ class MainWindow(QMainWindow):
         root.addWidget(self.status)
 
         self.connect_btn.clicked.connect(self.connect_telegram)
+        self.api_btn.clicked.connect(self.edit_api_settings)
+        self.reset_login_btn.clicked.connect(self.reset_login)
+        self.logs_btn.clicked.connect(self.open_logs)
         self.refresh_btn.clicked.connect(self.refresh_groups)
         self.output_btn.clicked.connect(self.choose_output)
         self.select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
         self.select_none_btn.clicked.connect(lambda: self._set_all_checked(False))
         self.bulk_10_btn.clicked.connect(self.bulk_recent_10)
         self.export_btn.clicked.connect(self.start_export)
+
+        logger.info("Main window initialized")
 
     def _default_output_dir(self) -> Path:
         saved = read_json(settings_path(), {})
@@ -151,31 +172,107 @@ class MainWindow(QMainWindow):
         if path:
             self.output_label.setText(path)
             write_json_atomic(settings_path(), {"output_dir": path})
+            logger.info("Output directory changed to %s", path)
+
+    def open_logs(self) -> None:
+        path = logs_dir()
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if not opened:
+            QMessageBox.information(self, "日志目录", f"日志目录：\n{path}")
+
+    def _saved_credentials(self) -> ApiCredentials | None:
+        payload = read_json(credentials_path(), None)
+        if not payload:
+            return None
+        try:
+            return ApiCredentials(int(payload["api_id"]), str(payload["api_hash"]))
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Stored API credential file is invalid; asking user to re-enter it")
+            return None
+
+    def _save_credentials(self, creds: ApiCredentials) -> bool:
+        if creds.api_id <= 0 or not creds.api_hash:
+            QMessageBox.warning(self, "配置无效", "API ID 和 API Hash 不能为空。")
+            return False
+        write_json_atomic(credentials_path(), {"api_id": creds.api_id, "api_hash": creds.api_hash})
+        logger.info("Telegram API credentials saved locally (api_id=%s; api_hash not logged)", creds.api_id)
+        return True
 
     def _load_credentials(self) -> ApiCredentials | None:
-        payload = read_json(credentials_path(), None)
-        if payload:
-            return ApiCredentials(int(payload["api_id"]), payload["api_hash"])
+        saved = self._saved_credentials()
+        if saved:
+            return saved
         dlg = CredentialsDialog(self)
         if dlg.exec() != QDialog.Accepted:
             return None
         creds = dlg.value()
-        if not creds.api_id or not creds.api_hash:
-            QMessageBox.warning(self, "配置无效", "API ID 和 API Hash 不能为空。")
-            return None
-        write_json_atomic(credentials_path(), {"api_id": creds.api_id, "api_hash": creds.api_hash})
-        return creds
+        return creds if self._save_credentials(creds) else None
+
+    @asyncSlot()
+    async def edit_api_settings(self) -> None:
+        if self._busy:
+            return
+        current = self._saved_credentials()
+        dlg = CredentialsDialog(self, current)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        creds = dlg.value()
+        if not self._save_credentials(creds):
+            return
+        if self.service:
+            await self.service.close()
+            self.service = None
+        self._mark_disconnected(clear_groups=True)
+        self.status.setText("API 设置已保存。请点击『连接 Telegram』重新连接。")
+
+    @asyncSlot()
+    async def reset_login(self) -> None:
+        if self._busy:
+            return
+        answer = QMessageBox.question(
+            self,
+            "重置 Telegram 登录",
+            "这会删除本机由本程序创建的 Telegram Session，并要求下次重新输入手机号/验证码。\n\n"
+            "不会删除 API ID/API Hash，也不会影响 Telegram 官方客户端。确定继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._set_busy(True, "正在重置本地登录状态…")
+        try:
+            if self.service:
+                await self.service.close()
+                self.service = None
+            removed = 0
+            for path in session_files():
+                try:
+                    if path.exists():
+                        path.unlink()
+                        removed += 1
+                except OSError as exc:
+                    logger.error("Failed to remove session file %s: %s", path.name, exc)
+                    raise
+            logger.info("Telegram local session reset; removed_files=%s", removed)
+            self._mark_disconnected(clear_groups=True)
+            QMessageBox.information(self, "重置完成", "本地 Telegram Session 已清除。下次连接会重新登录。")
+        except Exception as exc:
+            self._show_error(exc)
+        finally:
+            self._set_busy(False)
 
     async def _first_login(self) -> bool:
         assert self.service
         phone, ok = QInputDialog.getText(self, "Telegram 登录", "手机号（含国家区号，例如 +86...）：")
         if not ok or not phone.strip():
+            logger.info("First login cancelled before phone submission")
             return False
         self.status.setText("正在发送 Telegram 验证码…")
         await self.service.send_code(phone.strip())
 
         code, ok = QInputDialog.getText(self, "Telegram 验证码", "请输入 Telegram 收到的验证码：")
         if not ok or not code.strip():
+            logger.info("First login cancelled before code submission")
             return False
         needs_password = not await self.service.sign_in_code(phone.strip(), code.strip())
         if needs_password:
@@ -186,6 +283,7 @@ class MainWindow(QMainWindow):
                 QLineEdit.Password,
             )
             if not ok or not password:
+                logger.info("First login cancelled before 2FA submission")
                 return False
             await self.service.sign_in_password(password)
         return True
@@ -198,12 +296,14 @@ class MainWindow(QMainWindow):
         if not creds:
             return
         self._set_busy(True, "正在连接 Telegram…")
+        logger.info("User started Telegram connection (api_id=%s)", creds.api_id)
         try:
             if self.service:
                 await self.service.close()
             self.service = TelegramService(creds, session_path())
             authorized = await self.service.connect()
             if not authorized:
+                self.status.setText("网络已连接，账号尚未登录，准备发送验证码…")
                 authorized = await self._first_login()
             if not authorized:
                 self.status.setText("登录已取消。")
@@ -212,6 +312,7 @@ class MainWindow(QMainWindow):
             self.export_btn.setEnabled(True)
             self.connect_btn.setText("Telegram 已连接")
             await self._refresh_groups_impl()
+            logger.info("Telegram connection and dialog loading succeeded")
         except Exception as exc:
             self._show_error(exc)
         finally:
@@ -350,12 +451,14 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         results = []
         failures: list[tuple[str, str]] = []
+        logger.info("Starting export batch %s with %s groups", batch_name, len(plans))
         try:
             for done, (row, plan) in enumerate(plans, start=1):
                 status_item = self.table.item(row, 6)
                 if status_item:
                     status_item.setText("导出中…")
                 try:
+                    logger.info("Exporting group '%s' mode=%s", plan.group.title, plan.mode.value)
                     result = await export_group(self.service.client, plan, batch_dir)
                     results.append(result)
                     if result.latest_message_id:
@@ -366,7 +469,13 @@ class MainWindow(QMainWindow):
                         )
                     if status_item:
                         status_item.setText(f"完成：{result.message_count} 条")
+                    logger.info("Exported group '%s': %s messages", plan.group.title, result.message_count)
                 except Exception as exc:
+                    logger.error(
+                        "Export failed for group '%s'",
+                        plan.group.title,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
                     failures.append((plan.group.title, f"{type(exc).__name__}: {exc}"))
                     if status_item:
                         status_item.setText("失败")
@@ -376,12 +485,13 @@ class MainWindow(QMainWindow):
             self._set_busy(False)
 
         total = sum(r.message_count for r in results)
+        logger.info("Export batch completed: success=%s failed=%s messages=%s", len(results), len(failures), total)
         if failures:
             detail = "\n".join(f"• {name}: {err}" for name, err in failures[:8])
             QMessageBox.warning(
                 self,
                 "导出部分完成",
-                f"成功 {len(results)} 个群，共 {total} 条；失败 {len(failures)} 个。\n\n{detail}",
+                f"成功 {len(results)} 个群，共 {total} 条；失败 {len(failures)} 个。\n\n{detail}\n\n日志：{log_file_path()}",
             )
         else:
             QMessageBox.information(
@@ -391,9 +501,20 @@ class MainWindow(QMainWindow):
             )
         self.status.setText(f"本批次完成：成功 {len(results)}，失败 {len(failures)}，共 {total} 条文本。")
 
+    def _mark_disconnected(self, clear_groups: bool = False) -> None:
+        self.connect_btn.setText("连接 Telegram")
+        self.refresh_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
+        if clear_groups:
+            self.groups = []
+            self.table.setRowCount(0)
+
     def _set_busy(self, busy: bool, status: str | None = None) -> None:
         self._busy = busy
         self.connect_btn.setEnabled(not busy)
+        self.api_btn.setEnabled(not busy)
+        self.reset_login_btn.setEnabled(not busy)
+        self.logs_btn.setEnabled(True)
         self.refresh_btn.setEnabled(not busy and self.service is not None)
         self.output_btn.setEnabled(not busy)
         self.export_btn.setEnabled(not busy and self.service is not None and bool(self.groups))
@@ -401,9 +522,17 @@ class MainWindow(QMainWindow):
             self.status.setText(status)
 
     def _show_error(self, exc: Exception) -> None:
-        self.status.setText("操作失败。")
-        QMessageBox.critical(self, "错误", f"{type(exc).__name__}: {exc}")
+        logger.error("GUI operation failed", exc_info=(type(exc), exc, exc.__traceback__))
+        friendly = friendly_error_message(exc)
+        raw = f"{type(exc).__name__}: {exc}"
+        self.status.setText("操作失败。可点击『打开日志目录』查看详细日志。")
+        QMessageBox.critical(
+            self,
+            "Telegram 操作失败",
+            f"{friendly}\n\n原始错误：{raw}\n\n日志文件：\n{log_file_path()}",
+        )
 
     async def shutdown(self) -> None:
+        logger.info("Application shutdown requested")
         if self.service:
             await self.service.close()
