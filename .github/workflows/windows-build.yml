@@ -35,18 +35,18 @@ jobs:
       - name: Build EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter launcher.py
+          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TGExporter launcher.py
 
       - name: Smoke-test packaged EXE
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath "$PWD\dist\TelegramMultiChatExporter.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          $process = Start-Process -FilePath "$PWD\dist\TGExporter.exe" -ArgumentList "--smoke-test" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Packaged EXE smoke test failed with exit code $($process.ExitCode)" }
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: TelegramMultiChatExporter-windows-x64
-          path: dist/TelegramMultiChatExporter.exe
+          name: TGExporter-windows-x64
+          path: dist/TGExporter.exe
           if-no-files-found: error
           retention-days: 30
