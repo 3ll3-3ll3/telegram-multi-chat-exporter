@@ -1,6 +1,8 @@
-# Telegram Multi-Chat Exporter
+# TG Exporter
 
-一个面向 Windows 的 Telegram 多群批次文本消息导出工具。
+**TG 导出器**：一个面向 Windows 的 Telegram 多群批次文本消息导出工具。
+
+> 从 v0.1.6 起，产品展示名由 “Telegram Multi-Chat Exporter” 缩短为 **TG Exporter / TG 导出器**。为避免升级后丢失登录状态和配置，历史本地数据目录 `%APPDATA%\TelegramMultiChatExporter\` 继续沿用。
 
 ## 核心目标
 
@@ -63,6 +65,7 @@ Telegram 分组只用于读取和筛选：本工具不会创建、修改或删�
 - `v0.1.2` 起，在 Windows 上如果“系统代理”已启用，本程序会自动读取该代理端点并显式交给 Telethon。典型 Clash/Mihomo 的 `127.0.0.1:7890` 可以在不启用 TUN 的情况下使用。
 - `v0.1.3` 起，登录和主要消息框使用 qasync 安全的非嵌套对话框流程，避免 Telethon 后台任务与 Qt 嵌套事件循环重入。
 - `v0.1.5` 起，“选择群组”可读取 Telegram 账号同步的 Chat Folders / Dialog Filters，并在选择器内按账号分组筛选。
+- `v0.1.6` 起，产品展示名和发布文件名统一缩短为 **TG Exporter / TGExporter.exe**。
 
 日志默认位置：
 
@@ -85,8 +88,8 @@ Telegram 分组只用于读取和筛选：本工具不会创建、修改或删�
 
 正式版本发布到 GitHub Releases。发布流程提供：
 
-- 单文件 EXE：最方便；
-- portable ZIP：PyInstaller onedir 构建，不使用 one-file 自解压层；
+- 单文件 EXE：`TGExporter-vX.Y.Z-windows-x64.exe`；
+- portable ZIP：`TGExporter-vX.Y.Z-windows-x64-portable.zip`；
 - `SHA256SUMS.txt`：发布文件完整性校验。
 
 固定最新版入口：
@@ -120,6 +123,14 @@ python -m venv .venv
 pip install -e ".[dev]"
 python -m telegram_exporter
 ```
+
+安装后也可使用短命令：
+
+```powershell
+tg-exporter
+```
+
+旧命令 `telegram-multi-chat-exporter` 暂时保留兼容。
 
 ## License
 

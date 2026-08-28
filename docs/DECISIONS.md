@@ -132,3 +132,25 @@ Actions Artifact 是 CI 临时产物；用户长期下载入口是 Releases。Re
 - 需要尊重 Telegram folder 的显式 include/exclude 和 group/broadcast、exclude_read、exclude_muted、exclude_archived 等动态规则；
 - 文件夹读取失败不得阻止原来的完整 catalogue + 搜索功能；
 - 主编辑面板仍然只显示最终勾选的 focused workspace，不因为增加文件夹功能而重新铺满全部群。
+
+## D-015：产品展示名缩短为 TG Exporter
+
+**状态：Accepted**
+
+从 v0.1.6 起，用户可见品牌统一为：
+
+```text
+TG Exporter
+TG 导出器
+TGExporter.exe
+```
+
+内部 Python 包名 `telegram_exporter` 不因品牌变化而重构；这样可以避免无意义的大范围 import 迁移。
+
+为保证已有用户升级后继续复用 Telegram Session、API 设置、工作群选择和日志，历史本地数据目录：
+
+```text
+%APPDATA%\TelegramMultiChatExporter\
+```
+
+继续作为兼容路径使用，不随品牌名迁移。
