@@ -34,6 +34,12 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter --collect-all telethon --collect-all PySide6 launcher.py
 
+      - name: Smoke-test packaged EXE
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD\dist\TelegramMultiChatExporter.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged EXE smoke test failed with exit code $($process.ExitCode)" }
+
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
