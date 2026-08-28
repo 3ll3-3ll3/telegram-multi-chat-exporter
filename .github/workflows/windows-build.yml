@@ -32,7 +32,7 @@ jobs:
       - name: Build EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name TelegramMultiChatExporter --collect-all telethon --collect-all PySide6 src/telegram_exporter/main.py
+          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter --collect-all telethon --collect-all PySide6 launcher.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
