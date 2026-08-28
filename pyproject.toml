@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-multi-chat-exporter"
-version = "0.1.1"
+version = "0.1.2"
 description = "Windows GUI batch exporter for Telegram group text messages"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "PySide6==6.11.2",
   "Telethon==1.44.0",
+  "python-socks[asyncio]>=2.7,<3",
   "qasync==0.28.0",
 ]
 
