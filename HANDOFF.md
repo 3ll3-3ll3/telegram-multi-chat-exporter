@@ -8,19 +8,19 @@
 
 ### 最新正式 Release
 
-- 当前已发布：**v0.1.4**
-- Release: `https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/tag/v0.1.4`
+- **v0.1.5**
+- Release: `https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/tag/v0.1.5`
+- Release target commit: `bf42ac79374d8ccf078a3f22bdb7d785bc46fb3c`
+- Release workflow run: `33161396822`
 - 正式分发：GitHub Releases（不是 Actions Artifact）
 
-### v0.1.5 candidate
-
-当前功能分支 `feat/telegram-chat-folders-v0.1.5` 准备发布 **v0.1.5**，包含：
+v0.1.5 正式发布包含：
 
 1. Telegram 账号现有 Chat Folders / Dialog Filters 读取与群组选择器筛选；
-2. main 已有的 shutdown/disconnect hotfix：兼容 Telethon `disconnect()` 返回 awaitable 或同步完成；
+2. shutdown/disconnect hotfix：兼容 Telethon `disconnect()` 返回 awaitable 或同步完成；
 3. shutdown 清理异常仅写日志，不再升级成 PyInstaller fatal dialog。
 
-`VERSION=v0.1.5`，`pyproject.toml=0.1.5`。PR/Windows CI 全绿后，应以 `release: v0.1.5` squash merge 到 main，让 release workflow 创建正式 Release。
+Release workflow 已全部通过：pytest、GUI import、one-file EXE build、portable onedir build、两种 packaged smoke-test、SHA256 生成和 Release 上传。
 
 ## 2. 用户已实际验证过什么
 
@@ -35,17 +35,17 @@
 
 1. **系统代理未被 Telethon 自动继承** → v0.1.2 起显式读取 Windows 系统代理。
 2. **qasync nested modal dialog 重入** → v0.1.3 改为非阻塞 dialog await 模式。
-3. **关闭程序时 `await None`** → 代码已修，随 v0.1.5 candidate 发布。
+3. **关闭程序时 `await None`** → v0.1.5 已发布修复。
 
 尚待用户真实账号 E2E：
 
-- Telegram 分组下拉框是否与账号实际 Chat Folders 名称/成员一致；
+- v0.1.5 的 Telegram 分组下拉框是否与账号实际 Chat Folders 名称/成员一致；
 - 关闭 v0.1.5 是否不再弹 `Unhandled exception in script`；
 - 五个以上群的混合模式完整批次导出；
 - `导出后标已读` 对手机/桌面端 read marker 的真实同步验证；
 - 与 Telegram Desktop 同一群/同一时间窗口的 JSON differential test。
 
-## 3. v0.1.5 candidate 用户可见能力
+## 3. v0.1.5 用户可见能力
 
 - Windows PySide6 GUI。
 - Telegram 首次手机号 / code / 2FA 登录与本地 Session 复用。
@@ -144,7 +144,7 @@ JSON 兼容缺口见 `docs/JSON_COMPATIBILITY.md`：rich text、真实 chat type
 
 ### P0/P1
 
-- 发布并真人验证 v0.1.5：Telegram Folder 映射 + shutdown fix。
+- 让用户真人验证 v0.1.5：Telegram Folder 映射 + shutdown fix。
 - 真实账号测试 `导出后标已读` 的 frozen upper bound。
 
 ### P1
@@ -195,7 +195,6 @@ Telegram read marker 按 ID 推进，因此快照内未进入 JSON 的媒体/系
 
 - `VERSION` 与 `pyproject.toml` 必须一致。
 - 正式分发只用 GitHub Releases。
-- v0.1.5 发布成功后，立即把本文件顶部改成 v0.1.5 已发布并记录 release commit / CI。
 - 下一步让用户重点验证：①账号分组是否正确；②关闭窗口无 fatal dialog。
 - 之后再继续 JSON compatibility、atomic output 等工作。
 
