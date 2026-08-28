@@ -118,3 +118,17 @@ Actions Artifact 是 CI 临时产物；用户长期下载入口是 Releases。Re
 **状态：Accepted (user-deprioritized)**
 
 用户已明确要求不继续处理 360 相关问题。除非后续重新提出，不要主动消耗开发周期在 360 申诉、SignPath 等工作上。
+
+## D-014：优先复用 Telegram 账号自带聊天分组
+
+**状态：Accepted**
+
+“选择群组”不能只依靠在数百/上千个群中搜索名称。程序应读取 Telegram 账号已经同步的 Chat Folders / Dialog Filters，并允许用户先按账号现有分组缩小群组目录，再搜索、勾选工作群。
+
+规则：
+
+- 这些分组是**选择器视图**，不是本工具另建的一套云端分类；
+- 不修改、创建或删除用户 Telegram 里的分组；只读取；
+- 需要尊重 Telegram folder 的显式 include/exclude 和 group/broadcast、exclude_read、exclude_muted、exclude_archived 等动态规则；
+- 文件夹读取失败不得阻止原来的完整 catalogue + 搜索功能；
+- 主编辑面板仍然只显示最终勾选的 focused workspace，不因为增加文件夹功能而重新铺满全部群。

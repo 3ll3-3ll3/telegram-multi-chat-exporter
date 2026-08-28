@@ -8,27 +8,19 @@
 
 ### 最新正式 Release
 
-- **v0.1.4**
+- 当前已发布：**v0.1.4**
 - Release: `https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/tag/v0.1.4`
-- Release target commit: `d803eb5df2d9f4b6322071442d421b9c7a541c66`
 - 正式分发：GitHub Releases（不是 Actions Artifact）
 
-### main 比 v0.1.4 多出的未发布修复
+### v0.1.5 candidate
 
-当前 `main` 已包含退出清理 hotfix：
+当前功能分支 `feat/telegram-chat-folders-v0.1.5` 准备发布 **v0.1.5**，包含：
 
-- `659298e88cc5a9449b3055c3febb1b3737820e71` — 兼容 Telethon `disconnect()` 返回 awaitable 或直接完成的两种情况。
-- `3d3797cb73b24fc39a0765fc88c2af78aedaf892` — shutdown 清理错误只记日志，不再升级成 PyInstaller 致命异常框。
+1. Telegram 账号现有 Chat Folders / Dialog Filters 读取与群组选择器筛选；
+2. main 已有的 shutdown/disconnect hotfix：兼容 Telethon `disconnect()` 返回 awaitable 或同步完成；
+3. shutdown 清理异常仅写日志，不再升级成 PyInstaller fatal dialog。
 
-Windows CI run `33146614769` 已全部通过：
-
-- pytest
-- GUI import check
-- Windows EXE build
-- packaged EXE smoke-test
-- artifact upload
-
-**但这两个修复在写本交接时尚未发布成新的 GitHub Release。** 下一次二进制 Release 应至少包含它们，建议版本 `v0.1.5`（若期间还有其他修复，可一起发布）。
+`VERSION=v0.1.5`，`pyproject.toml=0.1.5`。PR/Windows CI 全绿后，应以 `release: v0.1.5` squash merge 到 main，让 release workflow 创建正式 Release。
 
 ## 2. 用户已实际验证过什么
 
@@ -43,38 +35,61 @@ Windows CI run `33146614769` 已全部通过：
 
 1. **系统代理未被 Telethon 自动继承** → v0.1.2 起显式读取 Windows 系统代理。
 2. **qasync nested modal dialog 重入** → v0.1.3 改为非阻塞 dialog await 模式。
-3. **关闭程序时 `await None`** → main 已修，尚待 Release；见上一节。
+3. **关闭程序时 `await None`** → 代码已修，随 v0.1.5 candidate 发布。
 
-尚不能仅凭 CI 宣称已完成的真实账号 E2E：
+尚待用户真实账号 E2E：
 
-- 五个以上群的混合模式完整批次导出。
-- `导出后标已读` 对手机/桌面端 read marker 的真实同步验证。
+- Telegram 分组下拉框是否与账号实际 Chat Folders 名称/成员一致；
+- 关闭 v0.1.5 是否不再弹 `Unhandled exception in script`；
+- 五个以上群的混合模式完整批次导出；
+- `导出后标已读` 对手机/桌面端 read marker 的真实同步验证；
 - 与 Telegram Desktop 同一群/同一时间窗口的 JSON differential test。
 
-## 3. v0.1.4 已有用户可见能力
+## 3. v0.1.5 candidate 用户可见能力
 
 - Windows PySide6 GUI。
-- Telegram 首次手机号 / code / 2FA 登录。
-- 本地 Session 复用。
+- Telegram 首次手机号 / code / 2FA 登录与本地 Session 复用。
 - Windows 系统代理自动检测与 Telethon 显式代理。
-- 本地轮转日志。
-- API 设置、重置登录、打开日志目录。
+- 本地轮转日志、API 设置、重置登录、打开日志目录。
 - 完整账号群组只作为后台 catalogue。
-- `选择群组` 搜索/勾选；主面板只显示固定工作群。
-- 已选工作群跨启动持久化。
-- 每群独立模式：
-  - 指定时间范围；
-  - 当前未读；
-  - 上次导出以后。
+- `选择群组` 中可先选择 **Telegram 分组**（账号已有 Chat Folder），再按群名 / `@username` 搜索和勾选。
+- 只显示包含至少一个群组/频道的 Telegram 文件夹；私聊/机器人-only 文件夹对本工具无可选目标，因此省略。
+- Telegram 文件夹只读：不创建、不修改、不删除账号内分组。
+- Telegram 文件夹加载失败时退化为原来的完整 catalogue + 搜索，不阻断主功能。
+- 主面板只显示最终勾选的固定工作群，选择跨启动持久化。
+- 每群独立模式：指定时间范围 / 当前未读 / 上次导出以后。
 - 当前未读使用刷新时冻结快照。
 - Option B：每群独立 `导出后标已读`，默认 OFF，仅未读模式可用。
-- 每个群独立 `result.json`。
-- 每次运行独立批次目录。
+- 每个群独立 `result.json`；每次运行独立批次目录。
 - 文本/caption-only；不下载媒体。
-- Telegram Desktop 风格的核心 JSON 字段。
-- one-file EXE + portable ZIP + SHA256SUMS 的 Release 流程。
+- Telegram Desktop 风格核心 JSON 字段。
+- one-file EXE + portable ZIP + SHA256SUMS Release 流程。
 
-## 4. 关键产品不变量
+## 4. Telegram Chat Folder 实现说明
+
+Telegram API 将聊天文件夹称为 **Dialog Filters**。当前实现：
+
+- `telegram_service.list_groups()` 在加载 dialogs 后调用 `messages.getDialogFilters`；
+- `dialog_filters.py` 负责把账号 filter 规则映射到 `GroupInfo.folders`；
+- `group_selector.py` 从每个 group 的 folder refs 构造 `Telegram 分组` 下拉框；
+- 文件夹筛选与文本搜索是 AND 关系；
+- 一个群可同时属于多个 Telegram 文件夹。
+
+动态规则当前覆盖：
+
+- explicit `include_peers` / `pinned_peers`；
+- explicit `exclude_peers`；
+- `groups`；
+- `broadcasts`；
+- `exclude_read`；
+- `exclude_muted`；
+- `exclude_archived`。
+
+优先级：explicit exclude > explicit/pinned include > dynamic type/exclusion rules。
+
+`DialogFilterDefault` 不作为自定义文件夹展示；选择器已有“全部群组/频道”。
+
+## 5. 关键产品不变量
 
 不要改变以下方向，除非用户明确要求：
 
@@ -84,28 +99,17 @@ Windows CI run `33146614769` 已全部通过：
 - JSON 是权威数据源。
 - 每群规则独立。
 - 主工作区只显示用户选中的少量群。
+- Telegram Chat Folders 仅用于选择器筛选，不修改用户账号分组。
 - 默认导出不改变 Telegram 已读状态。
 - read acknowledgement 只能在用户为该群明确启用 `导出后标已读` 后发送。
 - 导出 JSON 成功后才能标已读。
 - GUI-first，最终用户不应依赖 CLI。
 
-更完整规则见 `AGENTS.md`。
+更完整规则见 `AGENTS.md` 与 `docs/DECISIONS.md`。
 
-## 5. 当前代码结构（重要）
+## 6. 当前代码结构（重要）
 
-主要入口：
-
-- `launcher.py`：PyInstaller 入口；`--smoke-test` 只做导入验证。
-- `src/telegram_exporter/main.py`：QApplication + qasync event loop；当前导入 `focused_gui.MainWindow`。
-
-GUI 有历史演进层次：
-
-- `gui.py`：早期基础 GUI/通用实现。
-- `gui_async.py`：在基础 GUI 上增加 qasync-safe 非阻塞 dialog 行为。
-- `focused_gui.py`：当前实际主界面；在 qasync-safe 层上加入 focused workspace、未读快照和 Option B read policy。
-- `group_selector.py`：完整群目录的搜索/选择弹窗。
-
-**不要误把 `gui.py` 当当前最终 MainWindow。** 实际启动链是：
+启动链：
 
 ```text
 launcher.py
@@ -113,63 +117,53 @@ launcher.py
 → telegram_exporter.focused_gui.MainWindow
 ```
 
-后续可以考虑合并 GUI 层次降低技术债，但重构前必须保留 qasync-safe 行为并增加回归测试。
+GUI 层次：
 
-核心服务：
+- `gui.py`：早期基础 GUI/通用实现。
+- `gui_async.py`：qasync-safe 非阻塞 dialog 层。
+- `focused_gui.py`：当前实际主界面、focused workspace、未读快照、Option B。
+- `group_selector.py`：完整群目录 + Telegram Folder + 文本搜索/选择弹窗。
 
-- `telegram_service.py`：Telethon client、登录、dialog catalogue、代理连接、disconnect。
-- `proxy.py`：Windows 系统代理解析/检测。
-- `exporter.py`：按计划读取 Telegram 消息并写每群 `result.json`。
-- `read_state.py`：显式 read acknowledgement 逻辑。
-- `desktop_json.py`：Telegram Desktop 风格 JSON serializer。
-- `models.py`：GroupInfo / GroupExportPlan / ExportMode。
-- `storage.py`：本地 settings/state JSON 与 atomic write。
-- `paths.py`：`%APPDATA%\TelegramMultiChatExporter` 路径。
-- `logging_setup.py` / `diagnostics.py`：日志与用户友好错误。
+服务与模型：
 
-## 6. 当前 JSON 兼容缺口
+- `telegram_service.py`：Telethon client、登录、dialog catalogue、Dialog Filters、代理、disconnect。
+- `dialog_filters.py`：Telegram account folder membership evaluator。
+- `models.py`：`GroupInfo` / `FolderRef` / `GroupExportPlan` / `ExportMode`。
+- `proxy.py`：Windows 系统代理。
+- `exporter.py`：按计划读取并写每群 `result.json`。
+- `read_state.py`：显式 read acknowledgement。
+- `desktop_json.py`：Telegram Desktop 风格 serializer。
+- `storage.py` / `paths.py`：本地状态与路径。
+- `logging_setup.py` / `diagnostics.py`：日志和用户错误提示。
 
-详见 `docs/JSON_COMPATIBILITY.md`。当前最重要的技术债：
+## 7. 当前 JSON / 可靠性技术债
 
-1. `text_entities` 目前把整段文字作为一个 `plain` entity；未映射 bold/link/mention/code 等 Telegram entities。
-2. chat `type` 仍需要做到真实判断，避免硬编码/错误分类。
-3. 顶层 chat `id` 需要与 Telegram Desktop 的 ID 规则做实测差异验证；Telethon marked peer id 不能简单等同官方导出 id。
-4. 文本路径目前历史实现使用 `.strip()`，会改变首尾 whitespace；追求纯文本兼容时应改为原样保留，同时仍能判断“无文本媒体”。
-5. service message / forward metadata 尚未完整映射。
-6. media metadata 大部分不支持是**产品刻意选择**，不要因为兼容度目标擅自开始下载媒体。
+JSON 兼容缺口见 `docs/JSON_COMPATIBILITY.md`：rich text、真实 chat type/top-level id、whitespace、service/forward metadata 等。
 
-## 7. 当前可靠性技术债
-
-优先级建议：
+可靠性优先级：
 
 ### P0/P1
 
-- 把 main 上退出 hotfix 发布为新正式 Release，并由用户验证“关闭不再弹 Unhandled exception”。
-- 真实账号测试 `导出后标已读`：确认只推进到刷新时冻结的 `latest_message_id`。
+- 发布并真人验证 v0.1.5：Telegram Folder 映射 + shutdown fix。
+- 真实账号测试 `导出后标已读` 的 frozen upper bound。
 
 ### P1
 
-- `result.json` 改成临时文件 + atomic replace，避免写到一半异常留下半文件。
-- 处理两个群名清洗后目录名相同的 collision（建议稳定附加 chat id）。
-- 修正/验证 Telegram Desktop chat type 和 top-level id。
+- `result.json` atomic write。
+- sanitized duplicate group-title directory collision。
+- Telegram Desktop chat type / top-level id differential test。
 - 原样保存文字 whitespace。
 
 ### P2
 
 - rich text entity mapping。
-- forward metadata / service message 的纯文本兼容策略。
+- forward/service 纯文本兼容策略。
 - 每行实时消息进度、失败群一键重试。
-- GUI 层次收敛（`gui.py` / `gui_async.py` / `focused_gui.py`），但不可牺牲 qasync 安全。
+- GUI 三层结构收敛，但不可牺牲 qasync safety。
 
-## 8. 未读与已读语义（接手前必须理解）
+## 8. 未读与已读语义
 
-刷新 catalogue 时每个群保存：
-
-- `unread_count`
-- `read_inbox_max_id`
-- `latest_message_id`
-
-本次未读窗口固定为：
+刷新 catalogue 时保存 `unread_count / read_inbox_max_id / latest_message_id`，本批未读窗口固定为：
 
 ```text
 read_inbox_max_id < id <= latest_message_id
@@ -183,9 +177,9 @@ write result.json success
 → send_read_acknowledge(max_id=latest_message_id)
 ```
 
-注意 Telegram 的 read marker 是按 ID 的，所以该范围中的媒体/系统消息即使没进入纯文本 JSON，也可能随 max_id 一起变成已读。这是预期副作用，UI 必须告知用户。
+Telegram read marker 按 ID 推进，因此快照内未进入 JSON 的媒体/系统消息也可能一起变已读；UI 必须持续提示。
 
-## 9. 本地文件与敏感信息
+## 9. 本地文件与安全
 
 默认目录：
 
@@ -193,42 +187,18 @@ write result.json success
 %APPDATA%\TelegramMultiChatExporter\
 ```
 
-典型文件：
-
-```text
-api_credentials.json
-telegram.session
-local_state.json
-settings.json
-logs\app.log
-```
+典型文件：`api_credentials.json`、`telegram.session`、`local_state.json`、`settings.json`、`logs\app.log`。
 
 仓库和日志禁止出现 api_hash、手机号、验证码、2FA、Session 内容、聊天正文。
 
-## 10. 版本与发布
+## 10. 发布与下一步
 
-- `VERSION` 和 `pyproject.toml` version 必须一致。
-- 正式 Release workflow 只应在准备好发布时触发。
-- 用户下载入口是 GitHub Releases。
-- 发布前必须检查 `docs/RELEASE_PROCESS.md`。
-- 发布后新增/更新 `docs/releases/vX.Y.Z.md`，并更新本文件顶部“当前版本状态”。
+- `VERSION` 与 `pyproject.toml` 必须一致。
+- 正式分发只用 GitHub Releases。
+- v0.1.5 发布成功后，立即把本文件顶部改成 v0.1.5 已发布并记录 release commit / CI。
+- 下一步让用户重点验证：①账号分组是否正确；②关闭窗口无 fatal dialog。
+- 之后再继续 JSON compatibility、atomic output 等工作。
 
-## 11. 当前不做的事情
+## 11. 当前不做
 
-除非用户重新提出：
-
-- 不继续投入 360/杀软误报、代码签名申请等工作。
-- 不做完整 Telegram 媒体备份。
-- 不做云端消息数据库。
-- 不自动绕过安全软件。
-
-## 12. 下一 Agent 最推荐的起手动作
-
-如果用户没有提出新的功能，优先顺序：
-
-1. 确认 main 的 shutdown hotfix CI 仍为 green。
-2. 发 `v0.1.5`（或包含后续修复的新版本）。
-3. 让用户实测关闭窗口。
-4. 用一个小群做“当前未读 + 导出后标已读”真实 E2E。
-5. 取同一群同一时间窗的 Telegram Desktop `result.json` 做 differential comparison。
-6. 再做 JSON 兼容和 atomic output 等可靠性改进。
+除非用户重新提出：360/杀软误报与签名、完整媒体备份、云端消息数据库、自动绕过安全软件。
