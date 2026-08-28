@@ -1,0 +1,94 @@
+name: Release Windows EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: startsWith(github.event.head_commit.message, 'release:') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: GUI import check
+        shell: pwsh
+        run: |
+          python -c "from telegram_exporter.gui import MainWindow; from telegram_exporter.main import main; print('GUI import OK')"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onefile --name TelegramMultiChatExporter --paths src launcher.py
+
+      - name: Smoke-test packaged EXE
+        shell: pwsh
+        run: |
+          & .\dist\TelegramMultiChatExporter.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prepare release assets
+        id: prep
+        shell: pwsh
+        run: |
+          $tag = (Get-Content VERSION -Raw).Trim()
+          if (-not $tag.StartsWith('v')) { throw 'VERSION must start with v' }
+          $exe = "dist\TelegramMultiChatExporter-$tag-windows-x64.exe"
+          $zip = "dist\TelegramMultiChatExporter-$tag-windows-x64.zip"
+          Copy-Item .\dist\TelegramMultiChatExporter.exe $exe
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.prep.outputs.tag }}'
+          $exe = '${{ steps.prep.outputs.exe }}'
+          $zip = '${{ steps.prep.outputs.zip }}'
+          $notes = @"
+          Windows GUI Telegram multi-chat batch exporter.
+
+          Highlights:
+          - Per-group independent export rules: custom date range, current unread, or since previous successful export.
+          - Text-only export; media files are not downloaded, while text captions are preserved.
+          - Each run creates an independent batch directory and each group gets its own result.json.
+          - No master message database and no historical batch merging.
+          - Telegram Desktop-style JSON fields for plain-text messages.
+          - Telegram API credentials and session files remain local-only.
+
+          Validation:
+          - Unit tests passed.
+          - GUI import check passed.
+          - Windows EXE build passed.
+          - Packaged EXE smoke-test passed.
+
+          Note: this build is not code-signed, so Windows SmartScreen may show an unknown publisher warning on first launch.
+          "@
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $exe $zip --clobber
+          } else {
+            gh release create $tag $exe $zip --target "$env:GITHUB_SHA" --title "Telegram Multi-Chat Exporter $tag" --notes "$notes"
+          }
