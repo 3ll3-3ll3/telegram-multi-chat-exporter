@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +109,13 @@ class TelegramService:
         return groups
 
     async def close(self) -> None:
-        if self.client.is_connected():
-            logger.info("Disconnecting Telegram client")
-            await self.client.disconnect()
+        if not self.client.is_connected():
+            return
+        logger.info("Disconnecting Telegram client")
+        result = self.client.disconnect()
+        # Telethon's sync wrapper is dual-mode: while the event loop is running
+        # it returns an awaitable, but during Qt/qasync shutdown it may complete
+        # the disconnect synchronously and return None. Support both paths.
+        if inspect.isawaitable(result):
+            await result
+        logger.info("Telegram client disconnected")
