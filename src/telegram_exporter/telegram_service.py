@@ -90,6 +90,7 @@ class TelegramService:
                 if not (dialog.is_group or dialog.is_channel):
                     continue
                 entity = dialog.entity
+                latest_message_id = int(getattr(getattr(dialog, "message", None), "id", 0) or 0)
                 groups.append(
                     GroupInfo(
                         chat_id=int(get_peer_id(entity)),
@@ -97,6 +98,7 @@ class TelegramService:
                         username=getattr(entity, "username", None),
                         unread_count=int(dialog.unread_count or 0),
                         read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
+                        latest_message_id=latest_message_id,
                     )
                 )
         except Exception:
