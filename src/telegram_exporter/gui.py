@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, time, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from qasync import asyncSlot
 
 from .diagnostics import friendly_error_message
 from .exporter import export_group
+from .group_selector import GroupSelectorDialog
 from .logging_setup import log_file_path
 from .models import ExportMode, GroupExportPlan, GroupInfo
 from .paths import credentials_path, logs_dir, session_files, session_path, settings_path, state_path
@@ -47,7 +49,6 @@ MODE_LABELS = {
     ExportMode.UNREAD: "当前未读",
     ExportMode.SINCE_LAST_EXPORT: "上次导出以后",
 }
-MODE_BY_LABEL = {v: k for k, v in MODE_LABELS.items()}
 
 
 class CredentialsDialog(QDialog):
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Telegram 多群批次导出器")
         self.resize(1260, 780)
+        self.all_groups: list[GroupInfo] = []
         self.groups: list[GroupInfo] = []
         self.state = LocalState(state_path())
         self.service: TelegramService | None = None
@@ -98,15 +100,18 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         self.connect_btn = QPushButton("连接 Telegram")
+        self.select_groups_btn = QPushButton("选择群组")
+        self.select_groups_btn.setEnabled(False)
         self.api_btn = QPushButton("API 设置")
         self.reset_login_btn = QPushButton("重置登录")
         self.logs_btn = QPushButton("打开日志目录")
-        self.refresh_btn = QPushButton("刷新群组")
+        self.refresh_btn = QPushButton("刷新群组目录")
         self.refresh_btn.setEnabled(False)
         self.output_btn = QPushButton("选择输出目录")
         self.output_label = QLabel(str(self._default_output_dir()))
         self.output_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.connect_btn)
+        top.addWidget(self.select_groups_btn)
         top.addWidget(self.api_btn)
         top.addWidget(self.reset_login_btn)
         top.addWidget(self.logs_btn)
@@ -117,8 +122,9 @@ class MainWindow(QMainWindow):
         root.addWidget(self.output_label)
 
         hint = QLabel(
-            "一次可导出多个群；每个群可单独选择『指定时间范围 / 当前未读 / 上次导出以后』。"
-            "每次导出都是独立批次，不会合并历史消息。连接失败时请先查看错误提示；详细信息会写入本地日志。"
+            "账号中的全部群组只作为『群组目录』存在；主编辑面板只展示你在『选择群组』中勾选的工作群。"
+            "每个工作群可独立设置『指定时间范围 / 当前未读 / 上次导出以后』。"
+            "当前未读模式默认是只读抓取：导出本身不会把 Telegram 消息标为已读。"
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -151,6 +157,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.status)
 
         self.connect_btn.clicked.connect(self.connect_telegram)
+        self.select_groups_btn.clicked.connect(self.select_groups)
         self.api_btn.clicked.connect(self.edit_api_settings)
         self.reset_login_btn.clicked.connect(self.reset_login)
         self.logs_btn.clicked.connect(self.open_logs)
@@ -163,16 +170,55 @@ class MainWindow(QMainWindow):
 
         logger.info("Main window initialized")
 
+    def _settings(self) -> dict:
+        payload = read_json(settings_path(), {})
+        return payload if isinstance(payload, dict) else {}
+
+    def _update_settings(self, **updates) -> None:
+        payload = self._settings()
+        payload.update(updates)
+        write_json_atomic(settings_path(), payload)
+
     def _default_output_dir(self) -> Path:
-        saved = read_json(settings_path(), {})
+        saved = self._settings()
         return Path(saved.get("output_dir", str(Path.home() / "Documents" / "Telegram Exports")))
+
+    def _selected_group_ids(self) -> set[int]:
+        values = self._settings().get("selected_group_ids", [])
+        if not isinstance(values, list):
+            return set()
+        result: set[int] = set()
+        for value in values:
+            try:
+                result.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        return result
 
     def choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择导出目录", str(self._default_output_dir()))
         if path:
             self.output_label.setText(path)
-            write_json_atomic(settings_path(), {"output_dir": path})
+            self._update_settings(output_dir=path)
             logger.info("Output directory changed to %s", path)
+
+    def select_groups(self) -> None:
+        if not self.all_groups:
+            QMessageBox.information(self, "群组目录为空", "请先连接 Telegram 并加载群组目录。")
+            return
+        previous = self._capture_row_settings()
+        dialog = GroupSelectorDialog(self.all_groups, self._selected_group_ids(), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        selected_ids = dialog.selected_ids()
+        self._update_settings(selected_group_ids=sorted(selected_ids))
+        selected = [g for g in self.all_groups if g.chat_id in selected_ids]
+        self._render_groups(selected, previous)
+        logger.info("Workspace group selection updated: selected=%s catalog=%s", len(selected), len(self.all_groups))
+        if selected:
+            self.status.setText(f"群组目录共 {len(self.all_groups)} 个；编辑面板只显示已选 {len(selected)} 个。")
+        else:
+            self.status.setText(f"群组目录共 {len(self.all_groups)} 个；当前未选择工作群。")
 
     def open_logs(self) -> None:
         path = logs_dir()
@@ -261,26 +307,42 @@ class MainWindow(QMainWindow):
         finally:
             self._set_busy(False)
 
+    async def _ask_text_async(self, title: str, label: str, password: bool = False) -> tuple[str, bool]:
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(label)
+        if password:
+            dialog.setTextEchoMode(QLineEdit.Password)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[str, bool]] = loop.create_future()
+
+        def finished(result: int) -> None:
+            if not future.done():
+                future.set_result((dialog.textValue(), result == QDialog.Accepted))
+
+        dialog.finished.connect(finished)
+        dialog.open()
+        return await future
+
     async def _first_login(self) -> bool:
         assert self.service
-        phone, ok = QInputDialog.getText(self, "Telegram 登录", "手机号（含国家区号，例如 +86...）：")
+        phone, ok = await self._ask_text_async("Telegram 登录", "手机号（含国家区号，例如 +86...）：")
         if not ok or not phone.strip():
             logger.info("First login cancelled before phone submission")
             return False
         self.status.setText("正在发送 Telegram 验证码…")
         await self.service.send_code(phone.strip())
 
-        code, ok = QInputDialog.getText(self, "Telegram 验证码", "请输入 Telegram 收到的验证码：")
+        code, ok = await self._ask_text_async("Telegram 验证码", "请输入 Telegram 收到的验证码：")
         if not ok or not code.strip():
             logger.info("First login cancelled before code submission")
             return False
         needs_password = not await self.service.sign_in_code(phone.strip(), code.strip())
         if needs_password:
-            password, ok = QInputDialog.getText(
-                self,
+            password, ok = await self._ask_text_async(
                 "两步验证",
                 "账号已启用两步验证，请输入 Telegram 2FA 密码：",
-                QLineEdit.Password,
+                password=True,
             )
             if not ok or not password:
                 logger.info("First login cancelled before 2FA submission")
@@ -309,7 +371,6 @@ class MainWindow(QMainWindow):
                 self.status.setText("登录已取消。")
                 return
             self.refresh_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
             self.connect_btn.setText("Telegram 已连接")
             await self._refresh_groups_impl()
             logger.info("Telegram connection and dialog loading succeeded")
@@ -322,7 +383,7 @@ class MainWindow(QMainWindow):
     async def refresh_groups(self) -> None:
         if self._busy or not self.service:
             return
-        self._set_busy(True, "正在刷新群组…")
+        self._set_busy(True, "正在刷新群组目录…")
         try:
             await self._refresh_groups_impl()
         except Exception as exc:
@@ -332,16 +393,47 @@ class MainWindow(QMainWindow):
 
     async def _refresh_groups_impl(self) -> None:
         assert self.service
-        groups = await self.service.list_groups()
-        self._groups_loaded(groups)
+        previous = self._capture_row_settings()
+        self.all_groups = await self.service.list_groups()
+        selected_ids = self._selected_group_ids()
+        selected = [g for g in self.all_groups if g.chat_id in selected_ids]
+        self._render_groups(selected, previous)
+        self.select_groups_btn.setEnabled(True)
+        if selected:
+            self.status.setText(f"群组目录共 {len(self.all_groups)} 个；编辑面板只显示已选 {len(selected)} 个。")
+        else:
+            self.status.setText(f"已加载 {len(self.all_groups)} 个群组/频道。请点击『选择群组』挑选工作群。")
 
-    def _groups_loaded(self, groups: list[GroupInfo]) -> None:
+    def _capture_row_settings(self) -> dict[int, tuple[bool, str, QDate, QDate]]:
+        result: dict[int, tuple[bool, str, QDate, QDate]] = {}
+        for row, group in enumerate(self.groups):
+            check = self.table.cellWidget(row, 0)
+            mode = self.table.cellWidget(row, 2)
+            start = self.table.cellWidget(row, 3)
+            end = self.table.cellWidget(row, 4)
+            if not (
+                isinstance(check, QCheckBox)
+                and isinstance(mode, QComboBox)
+                and isinstance(start, QDateEdit)
+                and isinstance(end, QDateEdit)
+            ):
+                continue
+            result[group.chat_id] = (check.isChecked(), str(mode.currentData()), start.date(), end.date())
+        return result
+
+    def _render_groups(
+        self,
+        groups: list[GroupInfo],
+        previous: dict[int, tuple[bool, str, QDate, QDate]] | None = None,
+    ) -> None:
         self.groups = groups
         self.table.setRowCount(len(groups))
         today = QDate.currentDate()
+        previous = previous or {}
         for row, group in enumerate(groups):
+            saved = previous.get(group.chat_id)
             check = QCheckBox()
-            check.setChecked(True)
+            check.setChecked(saved[0] if saved else True)
             self.table.setCellWidget(row, 0, check)
             title = QTableWidgetItem(group.title)
             title.setToolTip(f"Telegram peer id: {group.chat_id}")
@@ -350,12 +442,16 @@ class MainWindow(QMainWindow):
             mode = QComboBox()
             for export_mode, label in MODE_LABELS.items():
                 mode.addItem(label, export_mode.value)
+            if saved:
+                index = mode.findData(saved[1])
+                if index >= 0:
+                    mode.setCurrentIndex(index)
             self.table.setCellWidget(row, 2, mode)
 
-            start = QDateEdit(today.addDays(-9))
+            start = QDateEdit(saved[2] if saved else today.addDays(-9))
             start.setCalendarPopup(True)
             start.setDisplayFormat("yyyy-MM-dd")
-            end = QDateEdit(today)
+            end = QDateEdit(saved[3] if saved else today)
             end.setCalendarPopup(True)
             end.setDisplayFormat("yyyy-MM-dd")
             self.table.setCellWidget(row, 3, start)
@@ -363,21 +459,23 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 5, QTableWidgetItem(str(group.unread_count)))
             self.table.setItem(row, 6, QTableWidgetItem("待导出"))
             mode.currentTextChanged.connect(lambda _text, r=row: self._update_row_mode(r))
-        self.status.setText(f"已加载 {len(groups)} 个群组/频道。")
+            self._update_row_mode(row)
+        self.export_btn.setEnabled(bool(groups) and self.service is not None and not self._busy)
 
     def _update_row_mode(self, row: int) -> None:
         mode = self.table.cellWidget(row, 2)
         start = self.table.cellWidget(row, 3)
         end = self.table.cellWidget(row, 4)
         assert isinstance(mode, QComboBox) and isinstance(start, QDateEdit) and isinstance(end, QDateEdit)
-        enabled = ExportMode(mode.currentData()) is ExportMode.DATE_RANGE
+        export_mode = ExportMode(mode.currentData())
+        enabled = export_mode is ExportMode.DATE_RANGE
         start.setEnabled(enabled)
         end.setEnabled(enabled)
         status_item = self.table.item(row, 6)
         if status_item:
-            if ExportMode(mode.currentData()) is ExportMode.UNREAD:
-                status_item.setText("将按当前未读位置导出")
-            elif ExportMode(mode.currentData()) is ExportMode.SINCE_LAST_EXPORT:
+            if export_mode is ExportMode.UNREAD:
+                status_item.setText("只读导出：不会改变 Telegram 已读状态")
+            elif export_mode is ExportMode.SINCE_LAST_EXPORT:
                 last_id = self.state.last_message_id(self.groups[row].chat_id)
                 status_item.setText(f"上次位置：{last_id}" if last_id else "尚无上次导出记录")
             else:
@@ -504,14 +602,17 @@ class MainWindow(QMainWindow):
     def _mark_disconnected(self, clear_groups: bool = False) -> None:
         self.connect_btn.setText("连接 Telegram")
         self.refresh_btn.setEnabled(False)
+        self.select_groups_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         if clear_groups:
+            self.all_groups = []
             self.groups = []
             self.table.setRowCount(0)
 
     def _set_busy(self, busy: bool, status: str | None = None) -> None:
         self._busy = busy
         self.connect_btn.setEnabled(not busy)
+        self.select_groups_btn.setEnabled(not busy and bool(self.all_groups))
         self.api_btn.setEnabled(not busy)
         self.reset_login_btn.setEnabled(not busy)
         self.logs_btn.setEnabled(True)
