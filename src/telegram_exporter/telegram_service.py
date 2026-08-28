@@ -9,6 +9,7 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.utils import get_peer_id
 
 from .models import GroupInfo
+from .proxy import ProxyConfig, detect_windows_system_proxy
 
 logger = logging.getLogger("telegram_exporter.telegram_service")
 
@@ -21,11 +22,26 @@ class ApiCredentials:
 
 class TelegramService:
     def __init__(self, credentials: ApiCredentials, session_file: Path):
-        self.client = TelegramClient(str(session_file), credentials.api_id, credentials.api_hash)
-        logger.info("Telegram client initialized (api_id=%s, session=%s)", credentials.api_id, session_file.name)
+        self.proxy: ProxyConfig | None = detect_windows_system_proxy()
+        proxy_payload = self.proxy.as_telethon_dict() if self.proxy else None
+        self.client = TelegramClient(
+            str(session_file),
+            credentials.api_id,
+            credentials.api_hash,
+            proxy=proxy_payload,
+        )
+        logger.info(
+            "Telegram client initialized (api_id=%s, session=%s, proxy=%s)",
+            credentials.api_id,
+            session_file.name,
+            self.proxy.safe_label if self.proxy else "direct",
+        )
 
     async def connect(self) -> bool:
-        logger.info("Connecting to Telegram transport")
+        logger.info(
+            "Connecting to Telegram transport via %s",
+            self.proxy.safe_label if self.proxy else "direct connection",
+        )
         try:
             await self.client.connect()
             authorized = await self.client.is_user_authorized()
