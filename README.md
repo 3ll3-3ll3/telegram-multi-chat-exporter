@@ -85,6 +85,29 @@
 - portable ZIP：PyInstaller onedir 构建，不使用 one-file 自解压层；
 - `SHA256SUMS.txt`：发布文件完整性校验。
 
+固定最新版入口：
+
+```text
+https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/latest
+```
+
+## 开发者 / Agent 接手
+
+本仓库会由不同 Agent 持续交接开发。**不要只读 README 就开始修改。**
+
+固定阅读顺序：
+
+1. [`AGENTS.md`](AGENTS.md) — 长期产品不变量、开发禁区、测试门槛。
+2. [`HANDOFF.md`](HANDOFF.md) — 当前正式版本、main 未发布修复、用户实测状态、下一步。
+3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 当前实际启动链、GUI/qasync/Telethon 架构。
+4. [`docs/DECISIONS.md`](docs/DECISIONS.md) — 已接受的设计决策。
+5. [`docs/TESTING.md`](docs/TESTING.md) — CI + 真人 Telegram E2E 测试矩阵。
+6. [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) — Windows Release 流程。
+7. [`docs/JSON_COMPATIBILITY.md`](docs/JSON_COMPATIBILITY.md) — 与 Telegram Desktop JSON 的兼容边界。
+8. [`SECURITY.md`](SECURITY.md) — Secret、Session、日志和 Telegram 写操作安全规则。
+
+重大功能、关键 bug、Release 或用户真实 E2E 结果完成后，必须同步更新 `HANDOFF.md`；长期设计方向变化同时更新 `docs/DECISIONS.md`。
+
 ## 开发运行
 
 ```powershell
@@ -100,4 +123,4 @@ MIT License，见 [`LICENSE`](LICENSE)。
 
 ## 安全
 
-公开仓库中禁止提交：Telegram `api_hash`、手机号、验证码、2FA 密码、`*.session`、本地日志和本地导出结果。这些内容均由应用在本机运行时创建。
+公开仓库中禁止提交：Telegram `api_hash`、手机号、验证码、2FA 密码、`*.session`、本地日志和本地导出结果。这些内容均由应用在本机运行时创建。完整规则见 [`SECURITY.md`](SECURITY.md)。
