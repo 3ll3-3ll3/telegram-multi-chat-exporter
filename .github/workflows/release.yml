@@ -34,15 +34,22 @@ jobs:
         run: |
           python -c "from telegram_exporter.gui import MainWindow; from telegram_exporter.main import main; print('GUI import OK')"
 
-      - name: Build EXE
+      - name: Build one-file EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name TelegramMultiChatExporter --paths src launcher.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name TelegramMultiChatExporter --paths src --distpath dist\onefile --workpath build\onefile launcher.py
 
-      - name: Smoke-test packaged EXE
+      - name: Build portable onedir
         shell: pwsh
         run: |
-          & .\dist\TelegramMultiChatExporter.exe --smoke-test
+          pyinstaller --noconfirm --clean --windowed --onedir --name TelegramMultiChatExporter --paths src --distpath dist\portable --workpath build\portable launcher.py
+
+      - name: Smoke-test packaged builds
+        shell: pwsh
+        run: |
+          & .\dist\onefile\TelegramMultiChatExporter.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\portable\TelegramMultiChatExporter\TelegramMultiChatExporter.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Prepare release assets
@@ -51,13 +58,22 @@ jobs:
         run: |
           $tag = (Get-Content VERSION -Raw).Trim()
           if (-not $tag.StartsWith('v')) { throw 'VERSION must start with v' }
-          $exe = "dist\TelegramMultiChatExporter-$tag-windows-x64.exe"
-          $zip = "dist\TelegramMultiChatExporter-$tag-windows-x64.zip"
-          Copy-Item .\dist\TelegramMultiChatExporter.exe $exe
-          Compress-Archive -Path $exe -DestinationPath $zip -Force
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $exe = "release-assets\TelegramMultiChatExporter-$tag-windows-x64.exe"
+          $portableZip = "release-assets\TelegramMultiChatExporter-$tag-windows-x64-portable.zip"
+          $checksums = "release-assets\SHA256SUMS.txt"
+          Copy-Item .\dist\onefile\TelegramMultiChatExporter.exe $exe
+          Compress-Archive -Path .\dist\portable\TelegramMultiChatExporter -DestinationPath $portableZip -Force
+          $exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash $portableZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "$exeHash  $(Split-Path $exe -Leaf)",
+            "$zipHash  $(Split-Path $portableZip -Leaf)"
+          ) | Set-Content -Encoding ascii $checksums
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "exe=$exe" >> $env:GITHUB_OUTPUT
-          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "portable_zip=$portableZip" >> $env:GITHUB_OUTPUT
+          "checksums=$checksums" >> $env:GITHUB_OUTPUT
 
       - name: Create or update GitHub Release
         shell: pwsh
@@ -66,7 +82,8 @@ jobs:
         run: |
           $tag = '${{ steps.prep.outputs.tag }}'
           $exe = '${{ steps.prep.outputs.exe }}'
-          $zip = '${{ steps.prep.outputs.zip }}'
+          $portableZip = '${{ steps.prep.outputs.portable_zip }}'
+          $checksums = '${{ steps.prep.outputs.checksums }}'
           $notes = @"
           Windows GUI Telegram multi-chat batch exporter.
 
@@ -77,18 +94,24 @@ jobs:
           - No master message database and no historical batch merging.
           - Telegram Desktop-style JSON fields for plain-text messages.
           - Telegram API credentials and session files remain local-only.
+          - Automatically uses the enabled Windows system proxy (for example Clash/Mihomo at 127.0.0.1:7890) for Telegram transport.
+
+          Downloads:
+          - Single EXE: easiest to run.
+          - Portable ZIP: onedir build without the PyInstaller one-file self-extraction layer; try this build if antivirus heuristics dislike the single EXE.
+          - SHA256SUMS.txt: integrity hashes for both assets.
 
           Validation:
           - Unit tests passed.
           - GUI import check passed.
-          - Windows EXE build passed.
-          - Packaged EXE smoke-test passed.
+          - One-file EXE smoke-test passed.
+          - Portable onedir EXE smoke-test passed.
 
-          Note: this build is not code-signed, so Windows SmartScreen may show an unknown publisher warning on first launch.
+          Note: these builds are not yet Authenticode-signed. The repository now documents the free SignPath Foundation OSS signing path.
           "@
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $exe $zip --clobber
+            gh release upload $tag $exe $portableZip $checksums --clobber
           } else {
-            gh release create $tag $exe $zip --target "$env:GITHUB_SHA" --title "Telegram Multi-Chat Exporter $tag" --notes "$notes"
+            gh release create $tag $exe $portableZip $checksums --target "$env:GITHUB_SHA" --title "Telegram Multi-Chat Exporter $tag" --notes "$notes"
           }
