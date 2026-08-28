@@ -11,6 +11,15 @@ class ExportMode(StrEnum):
     SINCE_LAST_EXPORT = "since_last_export"
 
 
+@dataclass(frozen=True, slots=True)
+class FolderRef:
+    """A Telegram account chat-folder reference attached to an eligible group."""
+
+    folder_id: int
+    title: str
+    order: int = 0
+
+
 @dataclass(slots=True)
 class GroupInfo:
     chat_id: int
@@ -19,6 +28,13 @@ class GroupInfo:
     unread_count: int = 0
     read_inbox_max_id: int = 0
     latest_message_id: int = 0
+    # Traits below are used only to evaluate Telegram account-side chat folders.
+    is_group: bool = False
+    is_broadcast: bool = False
+    is_muted: bool = False
+    is_archived: bool = False
+    is_unread: bool = False
+    folders: tuple[FolderRef, ...] = ()
 
 
 @dataclass(slots=True)
