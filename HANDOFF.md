@@ -8,19 +8,32 @@
 
 ### 最新正式 Release
 
-- **v0.1.5**
+- 当前已发布：**v0.1.5**
 - Release: `https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/tag/v0.1.5`
 - Release target commit: `bf42ac79374d8ccf078a3f22bdb7d785bc46fb3c`
-- Release workflow run: `33161396822`
 - 正式分发：GitHub Releases（不是 Actions Artifact）
 
-v0.1.5 正式发布包含：
+### v0.1.6 candidate
 
-1. Telegram 账号现有 Chat Folders / Dialog Filters 读取与群组选择器筛选；
-2. shutdown/disconnect hotfix：兼容 Telethon `disconnect()` 返回 awaitable 或同步完成；
-3. shutdown 清理异常仅写日志，不再升级成 PyInstaller fatal dialog。
+当前分支 `chore/short-name-v0.1.6` 准备发布 **v0.1.6**，目标是缩短项目用户可见名称：
 
-Release workflow 已全部通过：pytest、GUI import、one-file EXE build、portable onedir build、两种 packaged smoke-test、SHA256 生成和 Release 上传。
+```text
+TG Exporter
+TG 导出器
+TGExporter.exe
+```
+
+同时：
+
+- `pyproject.toml` distribution name 改为 `tg-exporter`；
+- 新 CLI 名为 `tg-exporter`，旧 `telegram-multi-chat-exporter` 暂时保留兼容；
+- Windows CI / Release 构建产物改为 `TGExporter`；
+- Release 资产改成 `TGExporter-vX.Y.Z-windows-x64.*`；
+- Release 标题改成 `TG Exporter vX.Y.Z`；
+- **不迁移** `%APPDATA%\TelegramMultiChatExporter\`，保证已有 Session/API/settings/logs 无缝复用；
+- 内部 Python module `telegram_exporter` 保持不变，避免无价值的大范围 import 重构。
+
+`VERSION=v0.1.6`，`pyproject.toml=0.1.6`。Windows CI 全绿后应以 `release: v0.1.6` squash merge 到 main，由 release workflow 创建正式 Release。
 
 ## 2. 用户已实际验证过什么
 
@@ -35,17 +48,19 @@ Release workflow 已全部通过：pytest、GUI import、one-file EXE build、po
 
 1. **系统代理未被 Telethon 自动继承** → v0.1.2 起显式读取 Windows 系统代理。
 2. **qasync nested modal dialog 重入** → v0.1.3 改为非阻塞 dialog await 模式。
-3. **关闭程序时 `await None`** → v0.1.5 已发布修复。
+3. **关闭程序时 `await None`** → v0.1.5 已包含修复。
 
 尚待用户真实账号 E2E：
 
-- v0.1.5 的 Telegram 分组下拉框是否与账号实际 Chat Folders 名称/成员一致；
-- 关闭 v0.1.5 是否不再弹 `Unhandled exception in script`；
+- Telegram 分组下拉框是否与账号实际 Chat Folders 名称/成员一致；
+- v0.1.5+ 关闭窗口是否不再弹 `Unhandled exception in script`；
 - 五个以上群的混合模式完整批次导出；
 - `导出后标已读` 对手机/桌面端 read marker 的真实同步验证；
 - 与 Telegram Desktop 同一群/同一时间窗口的 JSON differential test。
 
-## 3. v0.1.5 用户可见能力
+v0.1.6 发布后还需确认：旧 AppData 数据是否被新 `TGExporter.exe` 正常复用。
+
+## 3. 当前用户可见能力
 
 - Windows PySide6 GUI。
 - Telegram 首次手机号 / code / 2FA 登录与本地 Session 复用。
@@ -104,6 +119,7 @@ Telegram API 将聊天文件夹称为 **Dialog Filters**。当前实现：
 - read acknowledgement 只能在用户为该群明确启用 `导出后标已读` 后发送。
 - 导出 JSON 成功后才能标已读。
 - GUI-first，最终用户不应依赖 CLI。
+- 产品展示名从 v0.1.6 起使用 `TG Exporter / TG 导出器`；本地 AppData 兼容路径仍为 `%APPDATA%\TelegramMultiChatExporter\`。
 
 更完整规则见 `AGENTS.md` 与 `docs/DECISIONS.md`。
 
@@ -144,7 +160,7 @@ JSON 兼容缺口见 `docs/JSON_COMPATIBILITY.md`：rich text、真实 chat type
 
 ### P0/P1
 
-- 让用户真人验证 v0.1.5：Telegram Folder 映射 + shutdown fix。
+- 真人验证 Telegram Folder 映射 + shutdown fix + v0.1.6 旧 AppData 数据复用。
 - 真实账号测试 `导出后标已读` 的 frozen upper bound。
 
 ### P1
@@ -181,7 +197,7 @@ Telegram read marker 按 ID 推进，因此快照内未进入 JSON 的媒体/系
 
 ## 9. 本地文件与安全
 
-默认目录：
+兼容目录继续为：
 
 ```text
 %APPDATA%\TelegramMultiChatExporter\
@@ -189,13 +205,14 @@ Telegram read marker 按 ID 推进，因此快照内未进入 JSON 的媒体/系
 
 典型文件：`api_credentials.json`、`telegram.session`、`local_state.json`、`settings.json`、`logs\app.log`。
 
-仓库和日志禁止出现 api_hash、手机号、验证码、2FA、Session 内容、聊天正文。
+**不要仅因为产品改名就迁移这个目录。** 仓库和日志禁止出现 api_hash、手机号、验证码、2FA、Session 内容、聊天正文。
 
 ## 10. 发布与下一步
 
 - `VERSION` 与 `pyproject.toml` 必须一致。
 - 正式分发只用 GitHub Releases。
-- 下一步让用户重点验证：①账号分组是否正确；②关闭窗口无 fatal dialog。
+- v0.1.6 发布成功后，把本文件顶部改成 v0.1.6 已发布并记录 release commit / CI。
+- 下一步让用户重点验证：①新短名称；②旧 Session/settings 无缝复用；③账号分组是否正确；④关闭窗口无 fatal dialog。
 - 之后再继续 JSON compatibility、atomic output 等工作。
 
 ## 11. 当前不做
