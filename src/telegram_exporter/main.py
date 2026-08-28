@@ -83,6 +83,7 @@ async def _run_app(app: QApplication) -> int:
     close_event = asyncio.Event()
     app.aboutToQuit.connect(close_event.set)
     window = MainWindow()
+    window.setWindowTitle("TG 导出器")
     window.show()
     await close_event.wait()
     try:
@@ -96,10 +97,10 @@ async def _run_app(app: QApplication) -> int:
 
 def main() -> int:
     logger = setup_logging()
-    logger.info("Starting Telegram Multi-Chat Exporter")
+    logger.info("Starting TG Exporter")
     try:
         app = QApplication(sys.argv)
-        app.setApplicationName("Telegram Multi-Chat Exporter")
+        app.setApplicationName("TG Exporter")
         app.setOrganizationName("WJL")
         app.setStyle("Fusion")
         app.setFont(QFont("Microsoft YaHei UI", 10))
