@@ -29,10 +29,13 @@ jobs:
       - name: Test
         run: pytest -q
 
+      - name: GUI import check
+        run: python -c "import telegram_exporter.gui; print('GUI import OK')"
+
       - name: Build EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter --collect-all telethon --collect-all PySide6 launcher.py
+          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TelegramMultiChatExporter launcher.py
 
       - name: Smoke-test packaged EXE
         shell: pwsh
