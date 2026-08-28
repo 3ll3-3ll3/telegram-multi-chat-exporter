@@ -3,12 +3,15 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl import functions
 from telethon.utils import get_peer_id
 
+from .dialog_filters import apply_folder_memberships
 from .models import GroupInfo
 from .proxy import ProxyConfig, detect_windows_system_proxy
 
@@ -19,6 +22,21 @@ logger = logging.getLogger("telegram_exporter.telegram_service")
 class ApiCredentials:
     api_id: int
     api_hash: str
+
+
+def _dialog_is_muted(dialog) -> bool:
+    settings = getattr(getattr(dialog, "dialog", None), "notify_settings", None)
+    mute_until = getattr(settings, "mute_until", None)
+    if not mute_until:
+        return False
+    if isinstance(mute_until, datetime):
+        if mute_until.tzinfo is None:
+            mute_until = mute_until.replace(tzinfo=timezone.utc)
+        return mute_until > datetime.now(timezone.utc)
+    try:
+        return float(mute_until) > datetime.now(timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return False
 
 
 class TelegramService:
@@ -91,19 +109,38 @@ class TelegramService:
                 if not (dialog.is_group or dialog.is_channel):
                     continue
                 entity = dialog.entity
+                unread_count = int(dialog.unread_count or 0)
+                unread_mark = bool(getattr(dialog.dialog, "unread_mark", False))
                 groups.append(
                     GroupInfo(
                         chat_id=int(get_peer_id(entity)),
                         title=dialog.name or str(get_peer_id(entity)),
                         username=getattr(entity, "username", None),
-                        unread_count=int(dialog.unread_count or 0),
+                        unread_count=unread_count,
                         read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
                         latest_message_id=int(getattr(dialog.message, "id", 0) or 0),
+                        is_group=bool(dialog.is_group),
+                        is_broadcast=bool(dialog.is_channel and not dialog.is_group),
+                        is_muted=_dialog_is_muted(dialog),
+                        is_archived=bool(getattr(dialog, "archived", False)),
+                        is_unread=bool(unread_count > 0 or unread_mark),
                     )
                 )
         except Exception:
             logger.exception("Loading Telegram dialogs failed")
             raise
+
+        # Telegram calls account-side chat folders "dialog filters". Folder
+        # loading is deliberately non-fatal: if the API/schema ever changes,
+        # the existing all-groups selector must still remain usable.
+        try:
+            response = await self.client(functions.messages.GetDialogFiltersRequest())
+            filters = getattr(response, "filters", response)
+            folder_count = apply_folder_memberships(groups, filters or ())
+            logger.info("Loaded %s Telegram chat folders containing eligible groups/channels", folder_count)
+        except Exception:
+            logger.warning("Loading Telegram chat folders failed; continuing with full catalogue", exc_info=True)
+
         groups.sort(key=lambda x: x.title.casefold())
         logger.info("Loaded %s groups/channels", len(groups))
         return groups
