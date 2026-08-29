@@ -11,6 +11,7 @@ from telethon.errors import SessionPasswordNeededError
 from telethon.tl import functions
 from telethon.utils import get_peer_id
 
+from .avatar_cache import read_cached_avatar, write_cached_avatar
 from .dialog_filters import apply_folder_memberships
 from .models import GroupInfo
 from .proxy import ProxyConfig, detect_windows_system_proxy
@@ -37,6 +38,11 @@ def _dialog_is_muted(dialog) -> bool:
         return float(mute_until) > datetime.now(timezone.utc).timestamp()
     except (TypeError, ValueError):
         return False
+
+
+def _entity_has_photo(entity) -> bool:
+    photo = getattr(entity, "photo", None)
+    return photo is not None and photo.__class__.__name__ not in {"ChatPhotoEmpty", "UserProfilePhotoEmpty"}
 
 
 class TelegramService:
@@ -119,6 +125,7 @@ class TelegramService:
                         unread_count=unread_count,
                         read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
                         latest_message_id=int(getattr(dialog.message, "id", 0) or 0),
+                        has_photo=_entity_has_photo(entity),
                         is_group=bool(dialog.is_group),
                         is_broadcast=bool(dialog.is_channel and not dialog.is_group),
                         is_muted=_dialog_is_muted(dialog),
@@ -144,6 +151,30 @@ class TelegramService:
         groups.sort(key=lambda x: x.title.casefold())
         logger.info("Loaded %s groups/channels", len(groups))
         return groups
+
+    async def group_avatar_bytes(self, group: GroupInfo) -> bytes | None:
+        """Return the small chat avatar for selector UI, using a local cache.
+
+        This is deliberately separate from message export: avatars are never
+        included in result.json and no message media is downloaded.
+        """
+
+        cached = read_cached_avatar(group.chat_id)
+        if cached is not None:
+            return cached
+        if not group.has_photo:
+            return None
+
+        try:
+            entity = await self.client.get_entity(group.chat_id)
+            data = await self.client.download_profile_photo(entity, file=bytes, download_big=False)
+            if isinstance(data, bytes) and data:
+                write_cached_avatar(group.chat_id, data)
+                return data
+        except Exception:
+            # Avatar decoration must never break catalogue selection or export.
+            logger.warning("Loading selector avatar failed for chat_id=%s", group.chat_id, exc_info=True)
+        return None
 
     async def close(self) -> None:
         if not self.client.is_connected():
