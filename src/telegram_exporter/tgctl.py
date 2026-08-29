@@ -90,6 +90,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_forward_batch(ids: list[int], allow_large_batch: bool) -> None:
+    limit = LARGE_FORWARD_LIMIT if allow_large_batch else DEFAULT_FORWARD_LIMIT
+    if len(ids) > limit:
+        raise TelegramBridgeError(
+            INVALID_ARGUMENT,
+            f"单次 forward 最多 {limit} 条。"
+            + ("" if allow_large_batch else "如确有需要，请显式加入 --allow-large-batch。"),
+            {"requested_count": len(ids), "limit": limit},
+        )
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -219,6 +230,9 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
             if service:
                 await service.close()
 
+    if args.command == "forward":
+        validate_forward_batch(args.ids, args.allow_large_batch)
+
     service, _ = await _connect_existing_session()
     assert service is not None
     try:
@@ -257,14 +271,6 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
             return success(rows)
 
         if args.command == "forward":
-            limit = LARGE_FORWARD_LIMIT if args.allow_large_batch else DEFAULT_FORWARD_LIMIT
-            if len(args.ids) > limit:
-                raise TelegramBridgeError(
-                    INVALID_ARGUMENT,
-                    f"单次 forward 最多 {limit} 条。"
-                    + ("" if args.allow_large_batch else "如确有需要，请显式加入 --allow-large-batch。"),
-                    {"requested_count": len(args.ids), "limit": limit},
-                )
             try:
                 result = await service.forward_messages(
                     args.source_chat,
@@ -272,7 +278,7 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
                     args.ids,
                     dry_run=args.dry_run,
                 )
-            except TelegramBridgeError:
+            except (TelegramBridgeError, FloodWaitError):
                 raise
             except Exception as exc:
                 raise TelegramBridgeError(WRITE_FAILED, f"Telegram 转发失败：{type(exc).__name__}") from exc
@@ -285,7 +291,7 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
                     args.text,
                     dry_run=args.dry_run,
                 )
-            except TelegramBridgeError:
+            except (TelegramBridgeError, FloodWaitError):
                 raise
             except Exception as exc:
                 raise TelegramBridgeError(WRITE_FAILED, f"Telegram 发送失败：{type(exc).__name__}") from exc
