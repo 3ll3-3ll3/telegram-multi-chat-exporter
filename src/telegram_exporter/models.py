@@ -27,24 +27,53 @@ class GroupInfo:
     chat_id: int
     title: str
     username: str | None = None
+    chat_type: str = "group"
     unread_count: int = 0
     read_inbox_max_id: int = 0
     latest_message_id: int = 0
-    # A basic group upgraded to a supergroup remains as a migrated legacy Chat
-    # in the API. The selector hides that legacy row and attaches its peer id to
-    # the current supergroup so historical date-range exports can still read it.
     migrated_from_chat_id: int | None = None
-    # Whether Telegram exposes a profile photo for this chat. The selector may
-    # lazily fetch the small avatar into a local UI cache; export semantics stay
-    # text-only and result.json never includes the avatar.
     has_photo: bool = False
-    # Traits below are used only to evaluate Telegram account-side chat folders.
     is_group: bool = False
     is_broadcast: bool = False
     is_muted: bool = False
     is_archived: bool = False
     is_unread: bool = False
     folders: tuple[FolderRef, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AccountInfo:
+    user_id: int
+    display_name: str | None
+    username: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramMessageInfo:
+    chat_id: int
+    chat_title: str
+    message_id: int
+    date: datetime
+    sender: str | None
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardResult:
+    source_chat_id: int
+    destination_chat_id: int | str
+    requested_ids: tuple[int, ...]
+    successful_ids: tuple[int, ...]
+    failed_ids: tuple[int, ...]
+    dry_run: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    destination_chat_id: int | str
+    message_id: int | None
+    text_length: int
+    dry_run: bool = False
 
 
 @dataclass(slots=True)
