@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import secrets
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from telethon.errors import FloodWaitError
@@ -74,9 +72,8 @@ class DaemonServer:
         self.operations = OperationCoordinator()
         self.service: TelegramService | None = None
         self.authorized: bool | None = None
-        self.account_cache: dict[str, Any] | None = None
         self.exports = ExportCoordinator(self.operations, self._authorized_service)
-        self.shutdown_event = asyncio.Event()
+        self.shutdown_event = __import__("asyncio").Event()
         self.active_requests = 0
         self.last_activity = time.monotonic()
         self.gui_leases: dict[str, float] = {}
@@ -87,15 +84,12 @@ class DaemonServer:
         service = self.service
         self.service = None
         self.authorized = None
-        self.account_cache = None
         if service is not None:
             await service.close()
 
     async def close(self) -> None:
         for task in list(self.exports.tasks.values()):
             if not task.done():
-                # Normal daemon lifecycle should never call close while a job is
-                # active. This is a last-resort process shutdown path only.
                 task.cancel()
         await self._close_service()
 
@@ -115,13 +109,6 @@ class DaemonServer:
                 raise
             self.service = service
             self.authorized = bool(authorized)
-            if authorized:
-                account = await service.account_info()
-                self.account_cache = {
-                    "user_id": account.user_id,
-                    "display_name": account.display_name,
-                    "username": account.username,
-                }
         authorized = bool(self.authorized)
         if require_authorized and not authorized:
             raise TelegramBridgeError(
@@ -140,8 +127,7 @@ class DaemonServer:
 
     def _prune_leases(self) -> None:
         now = time.monotonic()
-        expired = [token for token, expiry in self.gui_leases.items() if expiry <= now]
-        for token in expired:
+        for token in [token for token, expiry in self.gui_leases.items() if expiry <= now]:
             self.gui_leases.pop(token, None)
 
     @property
@@ -152,12 +138,7 @@ class DaemonServer:
     def status_snapshot(self) -> dict[str, Any]:
         self._prune_leases()
         active = self.exports.active_job
-        if active:
-            state = "exporting"
-        elif self.service is not None and self.authorized:
-            state = "connected"
-        else:
-            state = "idle"
+        state = "exporting" if active else ("connected" if self.service is not None and self.authorized else "idle")
         return {
             "state": state,
             "authorized": bool(self.authorized),
@@ -185,10 +166,12 @@ class DaemonServer:
 
     async def handle_bytes(self, data: bytes) -> bytes:
         request_id = "unknown"
+        counted = False
         try:
             request = validate_request(decode_frame(data))
             request_id = str(request["request_id"])
             self.active_requests += 1
+            counted = True
             self.last_activity = time.monotonic()
             started = time.monotonic()
             result = await self.dispatch(request)
@@ -218,13 +201,13 @@ class DaemonServer:
             logger.error("Unhandled daemon RPC error", exc_info=(type(exc), exc, exc.__traceback__))
             response = error_response(request_id, "TELEGRAM_ERROR", f"Telegram 操作失败：{type(exc).__name__}")
         finally:
-            self.active_requests = max(0, self.active_requests - 1)
+            if counted:
+                self.active_requests = max(0, self.active_requests - 1)
             self.last_activity = time.monotonic()
 
         try:
             return encode_frame(response)
         except TelegramBridgeError as exc:
-            # A large successful response must become a small structured error.
             return encode_frame(error_response(request_id, exc.code, exc.message, exc.details))
 
     async def dispatch(self, request: dict[str, Any]) -> Any:
@@ -232,7 +215,7 @@ class DaemonServer:
         params = dict(request.get("params") or {})
         client_kind = str(request["client"].get("kind"))
 
-        # Pure local methods never wait for an export job.
+        # Pure local RPCs remain usable while Telegram export owns the operation queue.
         if method == "system.hello":
             return {
                 "protocol": PROTOCOL,
@@ -269,8 +252,7 @@ class DaemonServer:
             self.gui_leases[token] = time.monotonic() + GUI_LEASE_SECONDS
             return {"expires_in_seconds": GUI_LEASE_SECONDS}
         if method == "client.detach":
-            token = str(params.get("lease_token") or "")
-            self.gui_leases.pop(token, None)
+            self.gui_leases.pop(str(params.get("lease_token") or ""), None)
             return {"detached": True}
         if method == "system.shutdown":
             self._require_gui(request)
@@ -284,21 +266,27 @@ class DaemonServer:
             except KeyError as exc:
                 raise TelegramBridgeError(CHAT_NOT_FOUND, f"找不到 export job：{job_id}") from exc
 
-        # Auth RPCs are GUI-only; sensitive params are never logged.
+        # Login/session methods are GUI-only and serialized with all Telegram work.
         if method == "auth.configure_api":
             self._require_gui(request)
-            if self.operations.export_active:
-                raise TelegramBridgeError(EXPORT_IN_PROGRESS, "导出期间不能修改 Telegram API 配置。")
-            credentials = ApiCredentials(api_id=int(params.get("api_id", 0)), api_hash=str(params.get("api_hash") or ""))
-            save_credentials(credentials)
-            await self._close_service()
-            service, authorized = await self._ensure_service(require_authorized=False)
-            return {"authorized": authorized, "proxy": service.proxy.safe_label if service.proxy else "direct"}
+            credentials = ApiCredentials(
+                api_id=int(params.get("api_id", 0)),
+                api_hash=str(params.get("api_hash") or ""),
+            )
+
+            async def configure_api():
+                save_credentials(credentials)
+                await self._close_service()
+                service, authorized = await self._ensure_service(require_authorized=False)
+                return {"authorized": authorized, "proxy": service.proxy.safe_label if service.proxy else "direct"}
+
+            return await self.operations.run_write(configure_api, dry_run=False)
+
         if method == "auth.status":
             self._require_gui(request)
+
             async def auth_status():
-                credentials = load_saved_credentials()
-                if credentials is None:
+                if load_saved_credentials() is None:
                     return {"configured": False, "authorized": False}
                 service, authorized = await self._ensure_service(require_authorized=False)
                 return {
@@ -306,66 +294,72 @@ class DaemonServer:
                     "authorized": authorized,
                     "proxy": service.proxy.safe_label if service.proxy else "direct",
                 }
+
             return await self.operations.run_read(auth_status)
+
         if method == "auth.send_code":
             self._require_gui(request)
             phone = str(params.get("phone") or "").strip()
             if not phone:
                 raise TelegramBridgeError(INVALID_ARGUMENT, "手机号不能为空。")
+
             async def send_code():
                 service, _ = await self._ensure_service(require_authorized=False)
                 await service.send_code(phone)
                 return {"sent": True}
+
             return await self.operations.run_write(send_code, dry_run=False)
+
         if method == "auth.sign_in_code":
             self._require_gui(request)
             phone = str(params.get("phone") or "").strip()
             code = str(params.get("code") or "").strip()
             if not phone or not code:
                 raise TelegramBridgeError(INVALID_ARGUMENT, "手机号和验证码不能为空。")
+
             async def sign_code():
                 service, _ = await self._ensure_service(require_authorized=False)
                 complete = await service.sign_in_code(phone, code)
                 self.authorized = bool(complete)
                 return {"complete": complete, "needs_password": not complete}
+
             return await self.operations.run_write(sign_code, dry_run=False)
+
         if method == "auth.sign_in_password":
             self._require_gui(request)
             password = str(params.get("password") or "")
             if not password:
                 raise TelegramBridgeError(INVALID_ARGUMENT, "2FA 密码不能为空。")
+
             async def sign_password():
                 service, _ = await self._ensure_service(require_authorized=False)
                 await service.sign_in_password(password)
                 self.authorized = True
-                account = await service.account_info()
-                self.account_cache = {
-                    "user_id": account.user_id,
-                    "display_name": account.display_name,
-                    "username": account.username,
-                }
                 return {"complete": True}
+
             return await self.operations.run_write(sign_password, dry_run=False)
+
         if method == "auth.reset_session":
             self._require_gui(request)
-            if self.operations.export_active:
-                raise TelegramBridgeError(EXPORT_IN_PROGRESS, "导出期间不能重置 Telegram 登录。")
-            await self._close_service()
-            removed = 0
-            for path in session_files():
-                try:
-                    if path.exists():
-                        path.unlink()
-                        removed += 1
-                except OSError:
-                    logger.warning("Failed to remove Telegram session file %s", path.name, exc_info=True)
-                    raise
-            return {"removed_files": removed}
+
+            async def reset_session():
+                await self._close_service()
+                removed = 0
+                for path in session_files():
+                    try:
+                        if path.exists():
+                            path.unlink()
+                            removed += 1
+                    except OSError:
+                        logger.warning("Failed to remove Telegram session file %s", path.name, exc_info=True)
+                        raise
+                return {"removed_files": removed}
+
+            return await self.operations.run_write(reset_session, dry_run=False)
 
         if method == "telegram.status":
             async def status():
-                credentials = load_saved_credentials()
-                if credentials is None:
+                if load_saved_credentials() is None:
                     return {
                         "authorized": False,
                         "account": None,
@@ -389,18 +383,21 @@ class DaemonServer:
                     "proxy": service.proxy.safe_label if service.proxy else "direct",
                     "hint": None if authorized else "请先打开 TG Exporter 完成 Telegram 登录",
                 }
+
             return await self.operations.run_read(status)
 
         if method == "chats.catalogue":
             async def catalogue():
                 service = await self._authorized_service()
                 return [group_to_dict(group) for group in await service.list_groups()]
+
             return await self.operations.run_read(catalogue)
 
         if method == "chats.list":
             limit = int(params.get("limit", 100))
             if limit <= 0:
                 raise TelegramBridgeError(INVALID_ARGUMENT, "limit 必须大于 0。")
+
             async def chats_list():
                 service = await self._authorized_service()
                 groups = await service.list_groups()
@@ -419,6 +416,7 @@ class DaemonServer:
                         if needle in g.title.casefold() or (g.username and needle in g.username.casefold())
                     ]
                 return [_chat_dict(group) for group in groups[:limit]]
+
             return await self.operations.run_read(chats_list)
 
         if method == "messages.search":
@@ -432,12 +430,14 @@ class DaemonServer:
                     limit=int(params.get("limit", 100)),
                     case_sensitive=bool(params.get("case_sensitive", False)),
                 )
+
             return await self.operations.run_read(search_messages)
 
         if method == "messages.get":
             async def get_messages():
                 service = await self._authorized_service()
                 return await service.get_messages(params.get("chat", ""), params.get("ids", []))
+
             return await self.operations.run_read(get_messages)
 
         if method == "avatar.get":
@@ -445,10 +445,12 @@ class DaemonServer:
             if not isinstance(group_payload, dict):
                 raise TelegramBridgeError(INVALID_ARGUMENT, "avatar.get 缺少 group。")
             group = group_from_dict(group_payload)
+
             async def avatar():
                 service = await self._authorized_service()
                 data = await service.group_avatar_bytes(group)
                 return {"data_b64": base64.b64encode(data).decode("ascii") if data else None}
+
             return await self.operations.run_read(avatar)
 
         if method == "forward":
@@ -463,6 +465,7 @@ class DaemonServer:
                     {"requested_count": len(ids), "limit": limit},
                 )
             dry_run = bool(params.get("dry_run", False))
+
             async def forward():
                 service = await self._authorized_service()
                 try:
@@ -476,11 +479,13 @@ class DaemonServer:
                     raise
                 except Exception as exc:
                     raise TelegramBridgeError(WRITE_FAILED, f"Telegram 转发失败：{type(exc).__name__}") from exc
+
             return await self.operations.run_write(forward, dry_run=dry_run)
 
         if method == "send":
             dry_run = bool(params.get("dry_run", False))
             text = str(params.get("text") or "")
+
             async def send():
                 service = await self._authorized_service()
                 try:
@@ -493,6 +498,7 @@ class DaemonServer:
                     raise
                 except Exception as exc:
                     raise TelegramBridgeError(WRITE_FAILED, f"Telegram 发送失败：{type(exc).__name__}") from exc
+
             return await self.operations.run_write(send, dry_run=dry_run)
 
         if method == "export.batch.start":
