@@ -1,6 +1,5 @@
+import asyncio
 from types import SimpleNamespace
-
-import pytest
 
 from telegram_exporter.telegram_service import TelegramService
 
@@ -41,8 +40,7 @@ def _dialog(peer_id: int, title: str, *, migrated_to=None, is_group=True, is_cha
     )
 
 
-@pytest.mark.asyncio
-async def test_list_groups_hides_legacy_basic_group_and_attaches_migration(monkeypatch):
+def test_list_groups_hides_legacy_basic_group_and_attaches_migration(monkeypatch):
     old_id = -123
     current_id = -100999
     target = SimpleNamespace(peer_id=current_id)
@@ -58,7 +56,7 @@ async def test_list_groups_hides_legacy_basic_group_and_attaches_migration(monke
     service = object.__new__(TelegramService)
     service.client = FakeClient(dialogs)
 
-    groups = await service.list_groups()
+    groups = asyncio.run(service.list_groups())
 
     assert len(groups) == 1
     assert groups[0].chat_id == current_id
