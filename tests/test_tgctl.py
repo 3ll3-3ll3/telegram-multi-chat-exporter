@@ -13,6 +13,7 @@ from telegram_exporter.bridge_errors import (
     AMBIGUOUS_CHAT,
     CHAT_NOT_FOUND,
     INVALID_ARGUMENT,
+    MESSAGE_NOT_FOUND,
     NOT_AUTHORIZED,
     TelegramBridgeError,
 )
@@ -136,6 +137,17 @@ def test_search_filter_is_deterministic(monkeypatch) -> None:
     assert rows[0].text == "今天有预推免通知"
 
 
+def test_get_messages_reports_missing_id(monkeypatch) -> None:
+    service = _fake_service(
+        monkeypatch,
+        [FakeMessage(10, "存在", datetime(2026, 8, 29, 12, tzinfo=timezone.utc))],
+    )
+    with pytest.raises(TelegramBridgeError) as exc_info:
+        asyncio.run(service.get_messages(-1001, [10, 11]))
+    assert exc_info.value.code == MESSAGE_NOT_FOUND
+    assert exc_info.value.details == {"missing_ids": [11]}
+
+
 def test_forward_dry_run_never_calls_telegram_write(monkeypatch) -> None:
     service = _fake_service(
         monkeypatch,
@@ -145,6 +157,18 @@ def test_forward_dry_run_never_calls_telegram_write(monkeypatch) -> None:
     assert result.dry_run is True
     assert result.successful_ids == (10,)
     assert service.client.forward_calls == []
+
+
+def test_forward_real_uses_true_telegram_forward(monkeypatch) -> None:
+    service = _fake_service(
+        monkeypatch,
+        [FakeMessage(10, "safe text", datetime(2026, 8, 29, 12, tzinfo=timezone.utc))],
+    )
+    result = asyncio.run(service.forward_messages(-1001, "me", [10], dry_run=False))
+    assert result.dry_run is False
+    assert result.successful_ids == (10,)
+    assert service.client.forward_calls == [("me", [10], -1001)]
+    assert service.client.send_calls == []
 
 
 def test_send_dry_run_never_calls_telegram_write_or_log_body(monkeypatch, caplog) -> None:
@@ -157,11 +181,25 @@ def test_send_dry_run_never_calls_telegram_write_or_log_body(monkeypatch, caplog
     assert secret_body not in caplog.text
 
 
+def test_send_real_is_plain_text_without_parse_mode(monkeypatch, caplog) -> None:
+    service = _fake_service(monkeypatch, [])
+    body = "plain text only"
+    caplog.set_level(logging.INFO)
+    result = asyncio.run(service.send_text_message("me", body, dry_run=False))
+    assert result.message_id == 999
+    assert service.client.send_calls == [
+        ("me", body, {"parse_mode": None, "link_preview": False})
+    ]
+    assert body not in caplog.text
+
+
 def test_forward_batch_limit_requires_explicit_override() -> None:
     with pytest.raises(TelegramBridgeError) as exc_info:
         tgctl.validate_forward_batch(list(range(21)), False)
     assert exc_info.value.code == INVALID_ARGUMENT
+    tgctl.validate_forward_batch(list(range(20)), False)
     tgctl.validate_forward_batch(list(range(21)), True)
+    tgctl.validate_forward_batch(list(range(200)), True)
     with pytest.raises(TelegramBridgeError):
         tgctl.validate_forward_batch(list(range(201)), True)
 
