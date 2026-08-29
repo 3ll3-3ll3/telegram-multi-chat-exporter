@@ -58,6 +58,8 @@ jobs:
         run: |
           $tag = (Get-Content VERSION -Raw).Trim()
           if (-not $tag.StartsWith('v')) { throw 'VERSION must start with v' }
+          $notesFile = "docs\releases\$tag.md"
+          if (-not (Test-Path $notesFile)) { throw "Missing release notes: $notesFile" }
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $exe = "release-assets\TGExporter-$tag-windows-x64.exe"
           $portableZip = "release-assets\TGExporter-$tag-windows-x64-portable.zip"
@@ -74,6 +76,7 @@ jobs:
           "exe=$exe" >> $env:GITHUB_OUTPUT
           "portable_zip=$portableZip" >> $env:GITHUB_OUTPUT
           "checksums=$checksums" >> $env:GITHUB_OUTPUT
+          "notes_file=$notesFile" >> $env:GITHUB_OUTPUT
 
       - name: Create or update GitHub Release
         shell: pwsh
@@ -84,41 +87,11 @@ jobs:
           $exe = '${{ steps.prep.outputs.exe }}'
           $portableZip = '${{ steps.prep.outputs.portable_zip }}'
           $checksums = '${{ steps.prep.outputs.checksums }}'
-          $notes = @"
-          TG Exporter — Windows GUI Telegram multi-chat batch exporter.
-
-          Highlights:
-          - Shorter product name: TG Exporter / TG 导出器.
-          - Searchable focused workspace: the full account catalogue stays out of the main editor, and only selected working groups are shown.
-          - The group selector can read the Telegram account's existing Chat Folders / Dialog Filters, so users can narrow hundreds of groups by their own Telegram folders before searching/checking them.
-          - Telegram folder access is read-only; the exporter never creates, edits, reorders or deletes account folders.
-          - Per-group independent export rules: custom date range, current unread, or since previous successful export.
-          - Current-unread mode is frozen to the latest catalogue-refresh snapshot, so messages arriving later are excluded from that batch.
-          - Optional per-group "mark as read after export" policy is default-off and only runs after result.json was written successfully.
-          - A failed export never changes Telegram read state; a failed read acknowledgement is reported separately without deleting the JSON.
-          - Text-only export; media files are not downloaded, while text captions are preserved.
-          - Each run creates an independent batch directory and each group gets its own result.json.
-          - No master message database and no historical batch merging.
-          - Telegram Desktop-style JSON fields for plain-text messages.
-          - Telegram API credentials and session files remain local-only.
-          - Existing AppData storage path is intentionally preserved for upgrade compatibility.
-          - Automatically uses the enabled Windows system proxy (for example Clash/Mihomo at 127.0.0.1:7890) for Telegram transport.
-          - qasync-safe non-blocking login and message-dialog flow, including safe shutdown cleanup.
-
-          Downloads:
-          - Single EXE: easiest to run.
-          - Portable ZIP: onedir build without the PyInstaller one-file self-extraction layer.
-          - SHA256SUMS.txt: integrity hashes for both assets.
-
-          Validation:
-          - Unit tests passed.
-          - GUI import check passed.
-          - One-file EXE smoke-test passed.
-          - Portable onedir EXE smoke-test passed.
-          "@
+          $notesFile = '${{ steps.prep.outputs.notes_file }}'
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $exe $portableZip $checksums --clobber
+            gh release edit $tag --title "TG Exporter $tag" --notes-file $notesFile
           } else {
-            gh release create $tag $exe $portableZip $checksums --target "$env:GITHUB_SHA" --title "TG Exporter $tag" --notes "$notes"
+            gh release create $tag $exe $portableZip $checksums --target "$env:GITHUB_SHA" --title "TG Exporter $tag" --notes-file $notesFile
           }
