@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from .export_categories import normalize_categories, validate_category_name
+from .models import DEFAULT_EXPORT_CATEGORY
 
 
 class CategoryManagerDialog(QDialog):
@@ -31,6 +32,7 @@ class CategoryManagerDialog(QDialog):
         intro = QLabel(
             "分类由 TG Exporter 管理，并对应总输出目录下的一级文件夹。"
             "新建分类会自动创建文件夹；删除这里只取消软件中的分类，不删除历史导出文件。"
+            "『未分类』是内置默认项，无需手动创建。"
         )
         intro.setWordWrap(True)
         root.addWidget(intro)
@@ -75,6 +77,9 @@ class CategoryManagerDialog(QDialog):
             name = validate_category_name(self.name_edit.text())
         except ValueError as exc:
             self.error.setText(str(exc))
+            return
+        if name == DEFAULT_EXPORT_CATEGORY:
+            self.error.setText("『未分类』是内置默认分类，无需重复创建。")
             return
         if any(existing.casefold() == name.casefold() for existing in self._categories):
             self.error.setText("这个分类已经存在。")
