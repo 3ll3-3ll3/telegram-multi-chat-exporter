@@ -30,23 +30,32 @@ jobs:
         run: pytest -q
 
       - name: GUI import check
-        run: python -c "import telegram_exporter.gui; print('GUI import OK')"
+        run: python -c "import telegram_exporter.gui; import telegram_exporter.tgctl; print('GUI + tgctl import OK')"
 
-      - name: Build EXE
+      - name: Build TGExporter EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TGExporter launcher.py
 
-      - name: Smoke-test packaged EXE
+      - name: Build tgctl EXE
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath "$PWD\dist\TGExporter.exe" -ArgumentList "--smoke-test" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Packaged EXE smoke test failed with exit code $($process.ExitCode)" }
+          pyinstaller --noconfirm --clean --console --onefile --paths src --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
 
-      - name: Upload EXE
+      - name: Smoke-test packaged EXEs
+        shell: pwsh
+        run: |
+          & .\dist\TGExporter.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\tgctl\tgctl.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload EXEs
         uses: actions/upload-artifact@v4
         with:
           name: TGExporter-windows-x64
-          path: dist/TGExporter.exe
+          path: |
+            dist/TGExporter.exe
+            dist/tgctl/tgctl.exe
           if-no-files-found: error
           retention-days: 30

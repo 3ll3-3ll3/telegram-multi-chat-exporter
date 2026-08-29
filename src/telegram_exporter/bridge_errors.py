@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(slots=True)
+class TelegramBridgeError(Exception):
+    code: str
+    message: str
+    details: Any = None
+
+    def __str__(self) -> str:
+        return self.message
+
+
+NOT_AUTHORIZED = "NOT_AUTHORIZED"
+CHAT_NOT_FOUND = "CHAT_NOT_FOUND"
+AMBIGUOUS_CHAT = "AMBIGUOUS_CHAT"
+MESSAGE_NOT_FOUND = "MESSAGE_NOT_FOUND"
+FLOOD_WAIT = "FLOOD_WAIT"
+WRITE_FAILED = "WRITE_FAILED"
+INVALID_ARGUMENT = "INVALID_ARGUMENT"
+SESSION_BUSY = "SESSION_BUSY"
+UNSUPPORTED_MESSAGE = "UNSUPPORTED_MESSAGE"

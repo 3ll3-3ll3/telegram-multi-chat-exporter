@@ -1,36 +1,30 @@
 # TG Exporter
 
-**TG 导出器**：一个面向 Windows 的 Telegram 多群文本消息导出工具。
+**TG 导出器**：一个面向 Windows 的 Telegram 多群文本消息导出工具；v0.1.9 起同时提供可被 Codex 调用的本地 `tgctl` CLI Bridge。
 
-> 从 v0.1.6 起，产品展示名由 “Telegram Multi-Chat Exporter” 缩短为 **TG Exporter / TG 导出器**。为避免升级后丢失登录状态和配置，历史本地数据目录 `%APPDATA%\TelegramMultiChatExporter\` 继续沿用。
+> 为避免升级后丢失登录状态和配置，历史本地数据目录 `%APPDATA%\TelegramMultiChatExporter\` 继续沿用。
 
 ## 核心目标
 
-- GUI 优先，不要求用户熟悉命令行。
-- Telegram 账号里的全部群组只作为**群组目录**加载；主编辑面板只显示你主动选择的固定工作群。
-- “选择群组”可直接读取 Telegram 账号已有的**聊天文件夹 / 分组**，先按分组缩小目录，再搜索和勾选目标群。
-- 群组选择器显示群头像、群名、`@username`、群组/频道类型和未读数；头像仅作本地 UI 辅助，不写入导出文件。
-- 一次可处理多个工作群，每个群拥有**独立的导出规则和导出分类**。
-- 每个群可分别选择：指定时间范围、当前未读消息、自该群上次成功导出以后。
-- 消息导出只保留文字，不下载聊天里的图片、视频、语音或文件；带媒体的消息可保留文字 caption。群头像是选择器 UI 的独立例外。
-- 分类由软件内直接创建并保存在本机；每个群可绑定自己的分类。
-- 输出结构固定为：`总输出目录 / 分类 / 群组 / 日期时间.json`。
-- 每次导出生成新的独立 JSON 文件，不合并、不覆盖历史导出，不建设消息总库。
-- 普通群升级为超级群后，选择器只显示当前超级群，不再重复显示迁移前的旧 Basic Group；指定时间范围导出会在可用时自动补取迁移前历史。
-- JSON 字段尽量兼容 Telegram Desktop 的导出风格。
-- Telegram 登录凭据和 `.session` 仅存放在本机用户目录，绝不写入仓库。
+- GUI 继续作为日常导出主入口。
+- Telegram 账号里的全部群组只作为**群组目录**加载；主编辑面板只显示主动选择的工作群。
+- “选择群组”可读取 Telegram 账号已有的 Chat Folders / Dialog Filters，并显示群头像帮助识别。
+- 每个工作群拥有独立导出规则与导出分类：指定时间范围、当前未读、上次成功导出以后。
+- 输出结构：`总输出目录 / 分类 / 群组 / 日期时间.json`；每次结果独立，不合并、不覆盖历史。
+- 消息导出只保留文字/caption，不下载聊天媒体。
+- 普通群升级为超级群后，只显示当前 Supergroup；指定时间范围可补取迁移前历史。
+- Telegram 登录凭据和 `.session` 仅存放本机。
+- `tgctl` 复用同一个 Telegram 用户 Session，为 Codex 提供列群、搜消息、取消息、真正转发和纯文本发送能力。
 
-## 日常使用
+## GUI 日常使用
 
 1. 首次打开 EXE，输入 Telegram `api_id` / `api_hash` 并登录。
-2. 程序加载账号可访问的完整群组/频道目录，但不会把它们全部铺到主界面。
-3. 点击 **选择群组**。可以先在 **Telegram 分组** 下拉框中选择账号已有聊天文件夹，再通过头像、群名和 `@username` 快速识别并勾选真正需要处理的工作群；选择会保存在本机，下次继续使用。
-4. 点击 **管理分类**，在软件里直接新建例如“第一类 / 第二类 / 保研 / AI / 资料”等导出分类。对应文件夹会自动建立在当前总输出目录下面。
-5. 主表格中为每个工作群选择自己的**分类、导出方式和日期范围**。分类分配会保存在本机。
-6. 点击 **开始导出**。
-7. 每个群会在自己的分类/群组目录下生成一个按本次导出时间命名的新 JSON 文件。
+2. 点击 **选择群组**，可先按 Telegram 分组缩小范围，再用头像/群名/`@username` 选择工作群。
+3. 点击 **管理分类**，创建“第一类 / 第二类 / 保研 / AI / 资料”等本地导出分类。
+4. 主表格为每个工作群选择分类、导出方式和日期范围。
+5. 点击 **开始导出**。
 
-例如：
+输出示例：
 
 ```text
 D:\TG导出\
@@ -42,116 +36,123 @@ D:\TG导出\
 │     └─ 2026-08-29_18-55-01.json
 └─ 第二类\
    ├─ 群组3\
-   │  └─ 2026-08-29_18-55-01.json
    ├─ 群组4\
-   │  └─ 2026-08-29_18-55-01.json
    └─ 群组5\
-      └─ 2026-08-29_18-55-01.json
 ```
 
-如果同一个群恰好在同一秒再次导出，程序会自动追加 `_2`、`_3`，不会覆盖旧文件。
+同一群同一秒重复导出自动追加 `_2`、`_3`，不会覆盖旧文件。软件内删除分类也不会删除磁盘历史数据。
 
-软件内删除某个分类，只会取消它作为**未来导出选项**，不会删除磁盘上已经存在的历史分类文件夹或 JSON。
-
-Telegram 分组与“导出分类”是两件不同的事：
-
-- **Telegram 分组 / Chat Folder**：来自账号，只读，用来帮助你筛选和选择群；
-- **导出分类**：由 TG Exporter 在软件内创建，用来决定本地 JSON 放到哪个一级文件夹。
-
-本工具不会创建、修改或删除你 Telegram 账号里的聊天文件夹。如果某个 Telegram 文件夹只包含私聊/机器人而没有群组或频道，它不会出现在本工具的群组选择器里。
-
-群头像采用**按需加载**：优先显示圆形首字占位，只为当前屏幕附近实际可见的群请求小头像，并限制并发；成功后缓存到本机约 7 天。不会因为账号里有几百个群就在打开选择器时一次性下载全部头像。
+Telegram Chat Folder 与 Export Category 是两件不同的事：前者来自账号、只读、用于选择群；后者由 TG Exporter 在本机管理，用于决定 JSON 落盘目录。
 
 ## 普通群升级为超级群
 
-Telegram 底层在 Basic Group 升级为 Supergroup 后，会保留一个迁移前的旧 Chat peer。官方客户端通常把它隐藏，让用户只看到当前超级群。
+Telegram 底层在 Basic Group 升级为 Supergroup 后会保留旧 Chat peer。TG Exporter 从 v0.1.8 起：
 
-TG Exporter 从 v0.1.8 起采用同样的用户体验：
-
-- 群组目录只显示**当前超级群**；
-- 不会删除、退出、修改或降级你的超级群；
-- 迁移前旧群只作为内部历史来源保存，不单独显示成第二条；
-- 以前如果把旧群选进工作区，程序会尽量把“已选群、导出分类、导出后标已读偏好”等 UI 设置迁移到当前超级群；
-- “当前未读”和“上次导出以后”只操作当前超级群；
-- “指定时间范围”在检测到迁移关系时，会同时读取迁移前旧群和当前超级群，再按时间合并到本次 JSON。
-
-因此修复“重复群组”不会让真正的超级群消失。
+- catalogue 只显示当前 Supergroup；
+- 不删除、不退出、不修改或降级真实超级群；
+- 迁移前旧群只作为内部历史来源；
+- 旧工作区/分类/标已读偏好尽量迁到当前 Supergroup；
+- 当前未读、上次导出以后只操作当前 Supergroup；
+- 指定时间范围可读取 legacy + current，再按时间合并。
 
 ## 三种导出模式
 
 ### 指定时间范围
 
-完全按该群自己的开始/结束日期导出，适合周期性导出。不同群可以选择不同时间范围。
-
-如果该群是由普通群升级来的超级群，程序会在检测到迁移关系时自动尝试读取旧 Basic Group 的历史，并与当前超级群内容按时间合并。
+按该群自己的开始/结束日期导出。若群由 Basic Group 升级而来，会在检测到 migration relation 时读取迁移前历史。
 
 ### 当前未读
 
-以点击连接/刷新群组目录时 Telegram 返回的已读边界和最新消息位置为一个**冻结快照**。本次只处理该快照中的未读消息；导出过程中后来到达的新消息不会混入本次导出。
+刷新 catalogue 时冻结 Telegram 已读边界与最新消息位置。默认只读，不改变 Telegram read marker。
 
-默认行为是**只读导出**：读取并导出未读消息不会自动改变 Telegram 的已读状态。
-
-每个群额外有一个独立的 **导出后标已读** 开关：
-
-- 默认关闭；
-- 只在“当前未读”模式下可用；
-- 开关选择按群保存在本机；
-- 只有该群的 JSON 文件成功写入后，程序才会发送 Telegram 已读确认；
-- 如果导出失败，绝不会改变该群已读状态；
-- 如果 JSON 已成功但 Telegram 已读确认失败，JSON 会保留，并单独提示“标已读失败”；
-- 已读确认只推进到本次刷新时冻结的最新消息 ID，不会把刷新之后到达的新消息标成已读。
-
-注意：Telegram 的已读状态按消息 ID 推进，而本工具只导出文本。因此如果开启“导出后标已读”，该快照范围内的图片、文件、系统消息等未被写入 JSON 的非文本项，也可能一起变成已读。
+每群有独立 **导出后标已读** 开关：默认关闭，只在“当前未读”模式可用。严格顺序为：JSON 成功写入 → checkpoint 更新 → 可选 read acknowledgement。导出失败绝不标已读；read ack 失败也不删除已成功 JSON。
 
 ### 上次导出以后
 
-使用本工具为该群保存的最后成功导出消息位置作为起点。它与 Telegram 的“未读”是两套不同概念：即使你在手机上读过消息，“上次导出以后”仍可继续导出本工具尚未处理的新内容。
+使用本工具本地保存的最后成功导出位置，与 Telegram 官方客户端的“未读”状态无关。
+
+## Codex / tgctl 本地 Telegram Bridge
+
+v0.1.9 起正式 Release 附带 `tgctl.exe`。它不使用 Bot API，不重新登录，而是复用：
+
+```text
+%APPDATA%\TelegramMultiChatExporter\api_credentials.json
+%APPDATA%\TelegramMultiChatExporter\telegram.session
+```
+
+以及现有 Windows system proxy detection。
+
+如果尚未通过 GUI 登录，tgctl 会返回 `NOT_AUTHORIZED` 并提示先打开 TG Exporter，不会在 CLI 重新询问手机号/验证码/2FA。
+
+第一版命令：
+
+```powershell
+tgctl status --json
+tgctl chats list --folder "保研" --search "统计" --json
+tgctl messages search --chat -1001234567890 --contains "预推免" --limit 20 --json
+tgctl messages get --chat -1001234567890 --ids 123 456 --json
+tgctl forward --from -1001234567890 --to me --ids 123 456 --dry-run --json
+tgctl send --to me --text "TG Exporter Codex bridge test" --dry-run --json
+```
+
+`--to me` 表示 Saved Messages / 我的收藏。`forward` 使用 Telethon 真正 forward，不会默认复制文本后重新发送。真实 write operation 推荐始终：**先 dry-run → 用户确认 → 再去掉 `--dry-run`**。
+
+forward 默认单次最多 20 条；显式 `--allow-large-batch` 后最多 200 条。FloodWait 不自动疯狂重试，而是返回结构化 `FLOOD_WAIT` 和等待秒数。
+
+JSON 模式 stdout 只输出机器可读 envelope：
+
+```json
+{"ok":true,"data":{}}
+```
+
+失败：
+
+```json
+{"ok":false,"error":{"code":"AMBIGUOUS_CHAT","message":"...","details":[]}}
+```
+
+同名群不会被偷偷选择；会返回候选 chat_id 让 Codex 再指定。
+
+### GUI 与 tgctl 不能同时占用 Session
+
+Telethon 默认使用 SQLiteSession。同一 Session 被多个进程同时使用存在 SQLite lock / 更新冲突风险，因此 v0.1.9 给 GUI 与 CLI 加了同一 OS Session lock。
+
+第一版使用 `tgctl` 时请关闭 TG Exporter GUI。如果另一个进程已经占用 Session，后启动者返回 `SESSION_BUSY`，而不是冒险并发打开 `.session`。
+
+完整说明、JSON schema、退出码、Codex Prompt 和真人 E2E checklist：[`docs/CODEX_TGCTL.md`](docs/CODEX_TGCTL.md)。
 
 ## Telegram 连接、代理与诊断
 
-- **API 设置**：第一次填错 `api_id` / `api_hash` 后可以直接修改。
-- **重置登录**：清除本程序的本地 Telegram Session 后重新登录。
-- **打开日志目录**：直接打开本地日志文件夹。
-- 常见 Telegram API / 验证码 / 2FA / Flood Wait / 网络错误会转换成中文提示。
-- `v0.1.2` 起，在 Windows 上如果“系统代理”已启用，本程序会自动读取该代理端点并显式交给 Telethon。典型 Clash/Mihomo 的 `127.0.0.1:7890` 可以在不启用 TUN 的情况下使用。
-- `v0.1.3` 起，登录和主要消息框使用 qasync 安全的非嵌套对话框流程，避免 Telethon 后台任务与 Qt 嵌套事件循环重入。
-- `v0.1.5` 起，“选择群组”可读取 Telegram 账号同步的 Chat Folders / Dialog Filters，并在选择器内按账号分组筛选。
-- `v0.1.6` 起，产品展示名和发布文件名统一缩短为 **TG Exporter / TGExporter.exe**。
-- `v0.1.7` 起，群组选择器加入 42 px 圆形头像与约 58 px 的双行记录，并采用可见项按需加载和本地头像缓存。
-- `v0.1.8` 起，增加软件内导出分类、`分类/群组/日期时间.json` 输出结构，并合并普通群升级超级群后产生的重复目录项。
+- API 设置、重置登录、打开日志目录仍由 GUI 提供。
+- 常见 Telegram API / OTP / 2FA / Flood Wait / 网络错误会转换成友好提示。
+- Windows system proxy 会显式传给 Telethon；Clash/Mihomo 常见 `127.0.0.1:7890` 场景可直接使用。
+- qasync GUI 继续使用单事件循环 + 非阻塞 dialog。
+- 群头像采用可见项按需加载，本机缓存约 7 天，不进入导出 JSON。
 
-日志默认位置：
+日志：
 
 ```text
 %APPDATA%\TelegramMultiChatExporter\logs\app.log
 ```
 
-头像缓存默认位置：
+头像缓存：
 
 ```text
 %APPDATA%\TelegramMultiChatExporter\cache\avatars\
 ```
 
-日志采用 5 MB 轮转，最多保留 5 个历史文件。程序不会主动记录 `api_hash`、手机号、验证码、2FA 密码、Session 内容或聊天正文。
-
-### 首次连接失败时
-
-1. 确认 Telegram 官方桌面端在当前电脑和网络下能正常连接。
-2. 点击 **API 设置**，确认使用的是 `my.telegram.org` → **API development tools** 里的 `api_id` 和 `api_hash`，不是 BotFather 的 Bot Token。
-3. 如果本机依赖 Clash/Mihomo，确保 Windows“系统代理”处于启用状态；日志会显示程序检测到的代理类型、主机和端口。
-4. 手机号使用国际格式，例如 `+86xxxxxxxxxxx`。
-5. 如果提示 Session 无效或冲突，点击 **重置登录** 后重新连接。
-6. 仍失败时点击 **打开日志目录**，查看 `app.log` 中最后一次错误。
+日志不会主动记录 `api_hash`、手机号、验证码、2FA 密码、Session 内容或聊天正文。tgctl 写操作日志同样只记录动作、chat/message id、数量和结果。
 
 ## Release 下载
 
-正式版本发布到 GitHub Releases。发布流程提供：
+正式版本只通过 GitHub Releases 分发：
 
-- 单文件 EXE：`TGExporter-vX.Y.Z-windows-x64.exe`；
-- portable ZIP：`TGExporter-vX.Y.Z-windows-x64-portable.zip`；
-- `SHA256SUMS.txt`：发布文件完整性校验。
+- `TGExporter-vX.Y.Z-windows-x64.exe`；
+- `TGExporter-vX.Y.Z-windows-x64-portable.zip`（v0.1.9 起内含 `tgctl.exe`）；
+- `tgctl.exe`；
+- `SHA256SUMS.txt`。
 
-固定最新版入口：
+最新版：
 
 ```text
 https://github.com/3ll3-3ll3/tg-exporter/releases/latest
@@ -159,20 +160,19 @@ https://github.com/3ll3-3ll3/tg-exporter/releases/latest
 
 ## 开发者 / Agent 接手
 
-本仓库会由不同 Agent 持续交接开发。**不要只读 README 就开始修改。**
+不要只读 README 就修改。固定阅读顺序：
 
-固定阅读顺序：
+1. [`AGENTS.md`](AGENTS.md)
+2. [`HANDOFF.md`](HANDOFF.md)
+3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+4. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+5. [`docs/TESTING.md`](docs/TESTING.md)
+6. [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md)
+7. [`docs/JSON_COMPATIBILITY.md`](docs/JSON_COMPATIBILITY.md)
+8. [`SECURITY.md`](SECURITY.md)
+9. [`docs/CODEX_TGCTL.md`](docs/CODEX_TGCTL.md)
 
-1. [`AGENTS.md`](AGENTS.md) — 长期产品不变量、开发禁区、测试门槛。
-2. [`HANDOFF.md`](HANDOFF.md) — 当前正式版本、main 未发布修复、用户实测状态、下一步。
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 当前实际启动链、GUI/qasync/Telethon 架构。
-4. [`docs/DECISIONS.md`](docs/DECISIONS.md) — 已接受的设计决策。
-5. [`docs/TESTING.md`](docs/TESTING.md) — CI + 真人 Telegram E2E 测试矩阵。
-6. [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) — Windows Release 流程。
-7. [`docs/JSON_COMPATIBILITY.md`](docs/JSON_COMPATIBILITY.md) — 与 Telegram Desktop JSON 的兼容边界。
-8. [`SECURITY.md`](SECURITY.md) — Secret、Session、日志和 Telegram 写操作安全规则。
-
-重大功能、关键 bug、Release 或用户真实 E2E 结果完成后，必须同步更新 `HANDOFF.md`；长期设计方向变化同时更新 `docs/DECISIONS.md`。
+重大功能、关键 bug、Release 或用户真实 E2E 结果完成后必须同步更新 `HANDOFF.md`。
 
 ## 开发运行
 
@@ -181,15 +181,17 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
 python -m telegram_exporter
+python -m telegram_exporter.tgctl status --json
 ```
 
-安装后也可使用短命令：
+安装后：
 
 ```powershell
 tg-exporter
+tgctl status --json
 ```
 
-旧命令 `telegram-multi-chat-exporter` 暂时保留兼容。
+旧 GUI 命令 `telegram-multi-chat-exporter` 暂时保留兼容。
 
 ## License
 
@@ -197,4 +199,4 @@ MIT License，见 [`LICENSE`](LICENSE)。
 
 ## 安全
 
-公开仓库中禁止提交：Telegram `api_hash`、手机号、验证码、2FA 密码、`*.session`、本地日志和本地导出结果。这些内容均由应用在本机运行时创建。群头像缓存也只保存在本地 AppData，不进入仓库或导出结果。完整规则见 [`SECURITY.md`](SECURITY.md)。
+公开仓库禁止提交 Telegram `api_hash`、手机号、验证码、2FA 密码、`*.session`、本地日志、真实聊天正文、头像缓存和本地导出结果。完整规则见 [`SECURITY.md`](SECURITY.md)。
