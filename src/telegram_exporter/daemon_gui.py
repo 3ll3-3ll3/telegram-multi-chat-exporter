@@ -38,16 +38,27 @@ class MainWindow(FocusedMainWindow):
             service = await self._ensure_daemon_proxy()
             jobs = await service.list_export_jobs()
             active = next((job for job in jobs if job.get("state") in {"queued", "running"}), None)
+
+            # A restarted GUI must be able to recover an active export
+            # immediately.  auth.status is a Telegram read and, by the user's
+            # 3B policy, intentionally waits for export completion.  Therefore
+            # only consult the daemon's local status here while a job is active.
+            if active:
+                daemon_status = await service.daemon_status()
+                if daemon_status.get("authorized"):
+                    self.connect_btn.setText("Telegram 已连接")
+                    self.refresh_btn.setEnabled(True)
+                self._active_job_id = str(active["job_id"])
+                self.status.setText("检测到仍在后台运行的导出任务，已恢复进度显示。")
+                self._start_job_monitor(self._active_job_id, restored=True)
+                return
+
             auth = await service.auth_status()
             if auth.get("authorized"):
                 self.connect_btn.setText("Telegram 已连接")
                 self.refresh_btn.setEnabled(True)
                 self.export_btn.setEnabled(bool(self.groups))
-            if active:
-                self._active_job_id = str(active["job_id"])
-                self.status.setText("检测到仍在后台运行的导出任务，已恢复进度显示。")
-                self._start_job_monitor(self._active_job_id, restored=True)
-            elif jobs:
+            if jobs:
                 latest = jobs[0]
                 if latest.get("state") == "interrupted":
                     self.status.setText("上次后台任务因 daemon 退出而中断；没有伪报为成功。")
@@ -225,10 +236,6 @@ class MainWindow(FocusedMainWindow):
         self.status.setText(
             f"后台导出完成：成功 {success}，失败 {failed}，共 {total_messages} 条文本；已标已读 {marked} 个群。"
         )
-        # A restored job should still tell the user it finished, but avoid
-        # re-showing a completion popup for a job that was already terminal at
-        # startup. _monitor_job is only attached to active jobs, so this popup
-        # corresponds to a completion observed during this GUI lifetime.
         icon = QMessageBox.Warning if failed or state == "failed" else QMessageBox.Information
         title = "后台导出完成（有失败）" if failed or state == "failed" else "后台导出完成"
         self._show_message(
