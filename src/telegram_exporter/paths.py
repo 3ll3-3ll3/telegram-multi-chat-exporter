@@ -40,6 +40,22 @@ def settings_path() -> Path:
     return app_data_dir() / "settings.json"
 
 
+def ipc_identity_path() -> Path:
+    return app_data_dir() / "ipc_identity.json"
+
+
+def ipc_identity_lock_path() -> Path:
+    return app_data_dir() / "ipc_identity.lock"
+
+
+def daemon_lock_path() -> Path:
+    return app_data_dir() / "tg-daemon.lock"
+
+
+def daemon_job_state_path() -> Path:
+    return app_data_dir() / "daemon_jobs.json"
+
+
 def logs_dir() -> Path:
     path = app_data_dir() / "logs"
     path.mkdir(parents=True, exist_ok=True)
