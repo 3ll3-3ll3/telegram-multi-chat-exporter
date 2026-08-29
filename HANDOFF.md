@@ -6,218 +6,108 @@
 
 ## 1. 当前正式版本
 
-- 当前正式版：**TG Exporter v0.1.9**
+- 正式版：**TG Exporter v0.1.9**
 - Release：`https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.1.9`
-- PR：`#16`
-- merge commit / Release target：`22014f5999867e5d0b0e6c1e46320320fc974cd0`
-- Release workflow：`33258806323`，结论 success
+- merge commit：`22014f5999867e5d0b0e6c1e46320320fc974cd0`
+- Release workflow：`33258806323` success
+- 正式 SHA-256：
+  - GUI one-file `b2e349a7165de106f3f338df1fa44061b152ad70b0c1d71370c81758b98529cf`
+  - Portable `42af909157a624d5bc58fddb60b4f4bf6a520d9fe017a7ba115dbd2ea84f3d22`
+  - `tgctl.exe` `028fee5cec1ec6d28edee5e51a605a1560bca9188636d10dec37abc0eb35de53`
 
-正式资产 SHA-256：
+v0.1.8 GUI/category/migrated-supergroup/session compatibility 已由用户真人验证通过。v0.1.9 tgctl 真人 E2E 仍由用户本机测试中；不要把 CI/mock 当真人结果。
 
-- `TGExporter-v0.1.9-windows-x64.exe`
-  - `b2e349a7165de106f3f338df1fa44061b152ad70b0c1d71370c81758b98529cf`
-- `TGExporter-v0.1.9-windows-x64-portable.zip`
-  - `42af909157a624d5bc58fddb60b4f4bf6a520d9fe017a7ba115dbd2ea84f3d22`
-- `tgctl.exe`
-  - `028fee5cec1ec6d28edee5e51a605a1560bca9188636d10dec37abc0eb35de53`
+## 2. 已接受的下一阶段：v0.2.0 single daemon + local IPC
 
-## 2. 已确认的真人状态
-
-用户在 2026-08-29 明确反馈 v0.1.8 上一轮功能“都验证通过”。因此以下视为真实账号通过：
-
-- 软件内 Export Category 创建/保存/目录自动生成；
-- `output/category/group/timestamp.json` 长期目录结构；
-- 群分类分配与重启持久化；
-- migrated legacy Basic Group catalogue 折叠；
-- 当前 Supergroup 不消失、不退群、不被修改；
-- 跨 migration date-range 旧+新历史读取；
-- 旧 Session/settings 升级复用。
-
-更早已真人验证：Telegram API 登录、Windows system proxy/Clash transport、Session 保存复用；qasync/shutdown 历史问题已有修复。
-
-v0.1.9 的 tgctl 真人 E2E 当前仍由用户本机测试中；CI/mock 不能替代真实 Session/search/forward/send 验证。
-
-## 3. v0.1.9 当前架构
+用户已授权直接开始实现。目标解决 v0.1.9 `SESSION_BUSY`，但不是让 Telegram 操作无限并发。
 
 ```text
-GUI ───────→ TelegramService ─→ Telethon SQLiteSession
-tgctl ─────→ TelegramService ─→ Telethon SQLiteSession
-```
-
-两个入口使用同一 `%APPDATA%\TelegramMultiChatExporter\telegram.session`，因此由 OS-level `SessionLease` 保证同时只有一个进程直接打开 Session。
-
-结果：
-
-```text
-GUI owns → tgctl SESSION_BUSY
-tgctl owns → GUI SessionBusyError
-```
-
-这仍是 v0.1.9 正式行为。
-
-## 4. v0.1.9 tgctl 安全边界继续有效
-
-正式命令：
-
-```text
-tgctl status
-tgctl chats list
-tgctl messages search
-tgctl messages get
-tgctl forward
-tgctl send
-```
-
-继续保持：
-
-- `--json` stable envelope/error code；
-- tgctl 不重新做 phone/OTP/2FA 登录；
-- 同名 chat 返回 `AMBIGUOUS_CHAT`；
-- forward 是真正 Telegram forward；
-- send 只发纯文本；
-- forward/send 有 `--dry-run`；
-- forward 默认 20，显式 large batch 后 hard cap 200；
-- FloodWait 不 retry storm；
-- write 日志不记录正文；
-- 真人写测试只优先 Saved Messages。
-
-## 5. 当前设计分支
-
-分支：
-
-```text
-design/single-daemon-ipc-v1
-```
-
-本分支当前是**架构设计分支，不是运行代码实现分支**。
-
-用户于 2026-08-29 明确要求开始设计之前讨论的“方案 1”：
-
-```text
-single Telegram daemon owns Session
-├─ GUI IPC client
+TG daemon（唯一 Session/Telethon owner）
+├─ TG Exporter GUI IPC client
 ├─ tgctl IPC client
-└─ future MCP IPC client
+└─ future MCP IPC client（本版不实现）
 ```
 
-完整设计：
+详细设计：`docs/DAEMON_IPC_DESIGN.md`。
+长期决策：`docs/DECISIONS.md` D-026 ~ D-032。
+
+## 3. 用户已经确认的桌面体验
+
+- **1B**：关闭 GUI 时，正在导出的 job 继续后台完成。
+- **2A**：GUI 没开时，Codex/tgctl 可自动唤醒 daemon。
+- **3B**：导出期间 tgctl 的 Telegram 搜索/读取等待导出结束，不与导出并发。
+- **4B**：导出期间真正 send/forward 禁止执行，返回 `EXPORT_IN_PROGRESS`；不得排队后偷偷发送。
+- **5B**：GUI 崩溃后 daemon/job 继续；重开 GUI 恢复看到 job 进度/最近结果。
+- **6B**：daemon 显示 Windows 托盘图标，可看状态、打开 TG Exporter、请求退出。
+- **7A**：phone/OTP/2FA 交互仍只在 GUI；tgctl/Codex 不登录。
+- **8B**：无 GUI lease、无 job、无请求/排队 read 后约 10 分钟 idle exit；下次自动唤醒。
+
+## 4. v0.2.0 核心架构不变量
+
+1. 仍只有一份 `%APPDATA%\TelegramMultiChatExporter\telegram.session`，不复制 Session。
+2. GUI/tgctl 完成迁移后不得直接创建 TelegramClient，也不得在 daemon 失败时回退 direct SQLiteSession。
+3. 现有 `SessionLease` 保留，由 daemon 获取；用于兼容阻止旧 v0.1.9 进程同时打开 Session。
+4. IPC 首选 Windows Named Pipe / `AF_PIPE`，只传 UTF-8 JSON bytes，禁止 pickle object transport；不开 TCP/HTTP。
+5. IPC 使用本地随机 identity/auth secret，secret 不日志、不 stdout、不 Git。
+6. GUI 导出 job 必须 daemon-side 执行并直接原子写 JSON，不能把大量正文通过 Pipe 发回 GUI。
+7. `JSON success → checkpoint → optional read ack` 继续由 daemon coordinator 保证。
+8. export 是独占 Telegram job；纯本地 status/job/heartbeat RPC 不受阻塞。
+9. 真 write 在 export 活跃时拒绝；无 export 时仍保留 dry-run、20/200 cap、AMBIGUOUS_CHAT、FloodWait、媒体限制、no-body logging。
+10. write 请求传输中断绝不自动 retry，返回 `WRITE_OUTCOME_UNKNOWN`。
+11. daemon 不做 Windows Service/开机自启/24x7 listener/自动规则/MCP。
+
+## 5. 预计模块
 
 ```text
-docs/DAEMON_IPC_DESIGN.md
+src/telegram_exporter/
+├─ daemon_main.py
+├─ daemon_server.py
+├─ daemon_manager.py
+├─ daemon_tray.py
+├─ operation_coordinator.py
+├─ ipc_identity.py
+├─ ipc_protocol.py
+├─ ipc_transport.py
+├─ ipc_client.py
+├─ telegram_proxy.py
+└─ export_coordinator.py
 ```
 
-目标版本建议：**v0.2.0**。
+`telegram_service.py` / `exporter.py` 继续作为 daemon-side Core。
 
-当前设计 PR 合并也不应改变 v0.1.9 二进制行为；实际实施必须另起实现阶段/提交并跑完整 Windows CI。
+## 6. 实施顺序
 
-## 6. 已接受的 daemon 设计核心
+### Phase A — IPC foundation
+identity/auth、AF_PIPE JSON bytes、protocol validation、daemon singleton、ensure_running、fake backend tests。此阶段不碰真实 Telegram。
 
-### Session ownership
+### Phase B — daemon owns Telegram + tgctl
+TelegramService 移入 daemon；tgctl 全部走 IPC；保持 v0.1.9 CLI JSON/exit code 兼容；实现 export/read/write 调度安全层与 write unknown outcome。
 
-迁移完成后只有 daemon 创建 `TelegramService/TelegramClient` 并获得现有 `SessionLease`。
+### Phase C — GUI auth/read/avatar + tray
+GUI 登录 RPC、catalogue/avatar IPC、GUI lease/heartbeat、托盘 status/open/exit-after-export；GUI 不再创建 TelegramClient。
 
-GUI/tgctl 不再直接打开 SQLiteSession。旧 v0.1.9 进程若仍占用 Session，daemon 仍应通过现有 lock 返回 `SESSION_BUSY`，不得复制 Session 或绕过锁。
+### Phase D — GUI export jobs
+ExportCoordinator、daemon-side checkpoint/read ack、job progress/result、GUI close/crash 后继续、重开恢复。
 
-### IPC
+### Phase E — lifecycle/packaging
+idle 10min、autostart/recovery、safe job metadata、PyInstaller `tg-daemon.exe`、packaged smoke tests。
 
-首选 Windows Named Pipe：
+### Phase F — v0.2.0 Release gate
+Windows CI 全绿 + 用户真人 E2E 后发布。
 
-```text
-multiprocessing.connection AF_PIPE
-```
+## 7. 仍保持的历史规则
 
-仅使用 `send_bytes/recv_bytes` 传 UTF-8 JSON，禁止 pickle object transport，不开 TCP/Web Server。
+- 输出：`总目录 / Export Category / 群组 / YYYY-MM-DD_HH-mm-ss.json`；历史 JSON 不合并。
+- 聊天消息不下载媒体；头像只是 UI cache。
+- migrated Basic Group 只显示当前 Supergroup；date-range 可读取 legacy+current。
+- current unread frozen snapshot。
+- Option B 默认 OFF：JSON success → checkpoint → optional read ack。
+- Qt/qasync 不重新引入 nested blocking modal。
+- 日志严禁 api_hash/phone/OTP/2FA/Session/message body。
 
-IPC identity/auth secret 只保存在兼容 AppData，不进日志/Git/stdout。
+## 8. 当前分支/PR 状态
 
-### daemon lifecycle
+设计 PR：`#17 docs: design single Telegram daemon + local IPC`。
+用户已经确认体验并要求“直接开始工作”。设计文档可以合并为实施基线，然后从最新 main 新建 v0.2.0 功能分支。
 
-- 按需自动启动；
-- 不注册 Windows Service；
-- 不开机常驻；
-- 不实现 24/7 listener/event rules；
-- GUI 可持有 client lease；
-- 无 lease/job/request 后 idle timeout 自动退出；
-- daemon crash 后 read-only RPC 最多自动恢复/重试一次；
-- write RPC 传输中断绝不自动重试，返回 `WRITE_OUTCOME_UNKNOWN`。
-
-### GUI export
-
-不能把几千/几万条导出消息作为一个巨大 Pipe response 传回 GUI。
-
-设计为：
-
-```text
-GUI submit GroupExportPlan/batch
-→ daemon export job
-→ daemon 内 Telegram fetch
-→ daemon 内 atomic JSON write
-→ daemon 内 checkpoint
-→ optional Option B read ack
-→ GUI 只 poll progress/result
-```
-
-这样继续保证：
-
-```text
-JSON success → checkpoint → optional read ack
-```
-
-### write safety
-
-未来 tgctl/MCP 都可能绕过 CLI parser 直接进入 IPC，因此 daemon 本身必须再次验证：
-
-- dry-run；
-- forward 20/200 cap；
-- destination/chat ambiguity；
-- allowed media scope；
-- FloodWait stop；
-- no-message-body logging。
-
-## 7. 设计阶段明确不做
-
-本设计阶段不实施：
-
-- MCP Server；
-- Windows Service；
-- TCP/Web Server；
-- 24/7 Telegram 监听；
-- 自动规则转发；
-- AI Agent/classifier；
-- 第二 Telegram Session；
-- Bot API；
-- 媒体发送/媒体转发；
-- 联系人/群/管理员管理；
-- 消息删除。
-
-MCP 未来只应作为 same IPCClient 上的一层薄 adapter。
-
-## 8. 推荐实施阶段
-
-按 `docs/DAEMON_IPC_DESIGN.md`：
-
-1. Phase A：AF_PIPE transport/protocol + fake backend；
-2. Phase B：daemon owns TelegramService，先迁 tgctl；
-3. Phase C：迁 GUI read/auth/avatar；
-4. Phase D：迁 GUI export job；
-5. Phase E：lifecycle/crash recovery/PyInstaller；
-6. Phase F：v0.2.0 candidate + 用户真人 E2E。
-
-不能在 Phase B 只迁 tgctl 后就声称已经解决 GUI/tgctl Session ownership；只有 GUI export/auth 等也全部不再直接创建 TelegramClient，架构迁移才完整。
-
-## 9. v0.2.0 Release gate（设计）
-
-至少满足：
-
-- 只有 daemon 获得生产 SessionLease；
-- GUI/tgctl 都通过 IPC；
-- GUI + tgctl 并发 read 不再正常返回 SESSION_BUSY；
-- GUI 导出语义、migration、Option B 全部回归；
-- tgctl v0.1.9 user-facing JSON/exit code 基本兼容；
-- daemon 端也 enforce write safety；
-- write transport failure 不 auto retry；
-- daemon crash/restart 可恢复；
-- 无 TCP/Web server；
-- 无真实 Telegram Secret 进入 CI；
-- Windows packaged smoke 全绿；
-- 真人 Telegram 写操作仍只由用户本机验收。
+在 v0.2.0 正式 Release 前，**v0.1.9 仍是正式可用版本**，不得覆盖或伪称新架构已发布。
