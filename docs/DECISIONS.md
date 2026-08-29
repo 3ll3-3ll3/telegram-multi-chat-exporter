@@ -2,13 +2,19 @@
 
 本文件记录已经明确采用、后续 Agent 不应随意反转的设计决策。若用户明确改变方向，应修改对应条目并在 `HANDOFF.md` 记录。
 
-## D-001：独立批次，不做累计归档
+## D-001：独立导出文件，不做累计归档
 
-**状态：Accepted**
+**状态：Accepted（v0.1.8 更新）**
 
-每次运行创建新的批次目录，每群一个 `result.json`。历史批次不被读取、合并或重写。
+用户明确将旧的“每次运行创建批次目录，每群一个 `result.json`”改为长期分类目录结构：
 
-理由：用户的工作方式是每隔若干天独立导出固定若干群，而不是维护长期 master database。
+```text
+总输出目录 / 导出分类 / 群组 / YYYY-MM-DD_HH-mm-ss.json
+```
+
+每次对某群导出仍然是**独立 JSON 文件**。历史 JSON 不被读取、合并或重写；同秒冲突自动追加 `_2`、`_3`，绝不覆盖旧文件。
+
+理由：用户希望同一个群长期归在固定分类/群组目录下，按导出日期直接积累独立 JSON，而不是按整次运行批次查找。
 
 ## D-002：JSON 是权威数据源
 
@@ -24,7 +30,7 @@ JSON 是主格式。未来如增加 HTML，只允许从已生成的 JSON 本地�
 
 消息导出阶段不下载照片、视频、音频、语音、贴纸和文件。媒体消息存在文字 caption 时可以保留 caption。
 
-群/频道的**资料头像**不属于聊天消息导出内容；从 v0.1.7 起允许仅为群组选择器按需下载小头像并缓存在本机 UI cache。头像不得进入 `result.json`，也不得因此扩展成聊天媒体备份功能。
+群/频道的**资料头像**不属于聊天消息导出内容；从 v0.1.7 起允许仅为群组选择器按需下载小头像并缓存在本机 UI cache。头像不得进入 JSON，也不得因此扩展成聊天媒体备份功能。
 
 理由：产品目标仍是文本批量处理，不是完整备份工具；头像只是帮助用户在大量群组中快速识别目标。
 
@@ -32,7 +38,7 @@ JSON 是主格式。未来如增加 HTML，只允许从已生成的 JSON 本地�
 
 **状态：Accepted**
 
-同一批次内不同群可以分别使用 date range、current unread、since last export，不使用全局单一时间规则。
+同一次开始导出中，不同群可以分别使用 date range、current unread、since last export，并拥有各自导出分类，不使用全局单一时间规则或单一分类。
 
 ## D-005：Focused workspace
 
@@ -59,7 +65,7 @@ upper = latest_message_id
 lower < id <= upper
 ```
 
-导出过程中后来到达的消息留到下一批。
+导出过程中后来到达的消息留到下一次。
 
 ## D-007：Option B 已读策略
 
@@ -70,7 +76,7 @@ lower < id <= upper
 严格顺序：
 
 ```text
-result.json write success
+本次 JSON write success
 → local checkpoint update
 → optional read acknowledgement(max_id=snapshot upper bound)
 ```
@@ -114,6 +120,8 @@ Actions Artifact 是 CI 临时产物；用户长期下载入口是 Releases。Re
 **状态：Accepted**
 
 `local_state.json` 只保存每群必要 checkpoint，不保存聊天正文。凭据、Session、settings、logs 全部只在本机 AppData。
+
+导出分类列表和每群分类分配属于 UI 配置，保存在 `settings.json`，不进入 `local_state.json`。
 
 ## D-013：杀软误报/代码签名暂不作为当前开发主线
 
@@ -168,7 +176,42 @@ TGExporter.exe
 - 并发请求受限，避免数百群账号产生突发请求；
 - 成功头像仅缓存在本机 AppData，默认缓存约 7 天；
 - 头像加载失败不得影响选择器、Telegram 登录或消息导出；
-- 头像不写入 `result.json`，不复制到导出批次目录；
+- 头像不写入 JSON，不复制到导出目录；
 - 此能力不得被解释为允许下载聊天消息里的图片/视频/文件。
 
 选择器视觉基线：约 42 px 圆形头像、约 58 px 行高、双行文字（群名 + `@username`/类型/未读辅助信息）。
+
+## D-017：导出分类由软件自己管理
+
+**状态：Accepted**
+
+从 v0.1.8 起，“导出分类”是 TG Exporter 的本地概念，与 Telegram Chat Folder 严格区分。
+
+规则：
+
+- 用户在软件内点击 `管理分类` 新建分类；
+- 分类名必须可安全作为 Windows 文件夹名，不能静默把非法字符改写成另一个名字；
+- 自定义分类列表保存在 `settings.json` 的 `export_categories`；
+- 每群分类分配保存在 `group_export_categories`；
+- 内置 `未分类` 永远作为默认兜底；
+- 当前总输出目录下缺少分类目录时自动创建；
+- 删除分类只移除未来 UI 选项，不自动删除磁盘上的历史目录/JSON；
+- 更换总输出目录后，分类目录应在新根目录按需重新创建。
+
+## D-018：Basic Group → Supergroup 只显示一个逻辑群
+
+**状态：Accepted**
+
+Telegram 底层升级群组时会保留 migrated legacy Basic Group，并创建/使用当前 Supergroup。用户明确要求不因为底层迁移导致选择器出现同名重复群。
+
+采用：
+
+- 当前 Supergroup 是唯一主实体；
+- legacy Basic Group 不作为独立 catalogue 行显示；
+- legacy peer id 保存到 `GroupInfo.migrated_from_chat_id`；
+- 修复只改变本工具视图，不删除、退出、修改 Telegram 超级群；
+- 已选群、标已读偏好、导出分类等 UI 设置可从旧 peer id 迁到新 peer id；
+- `local_state.json` 旧 checkpoint 不直接复制到新 peer，因为旧/新消息 ID 序列不能假设等价；
+- current-unread / since-last 只读当前 Supergroup；
+- date-range 同时读取 legacy + current，并按时间合并成一个独立 JSON；
+- 当前不擅自对旧/新 peer 中可能重复的 message id 做重编号。
