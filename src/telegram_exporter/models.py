@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+DEFAULT_EXPORT_CATEGORY = "未分类"
+
 
 class ExportMode(StrEnum):
     DATE_RANGE = "date_range"
@@ -28,6 +30,10 @@ class GroupInfo:
     unread_count: int = 0
     read_inbox_max_id: int = 0
     latest_message_id: int = 0
+    # A basic group upgraded to a supergroup remains as a migrated legacy Chat
+    # in the API. The selector hides that legacy row and attaches its peer id to
+    # the current supergroup so historical date-range exports can still read it.
+    migrated_from_chat_id: int | None = None
     # Whether Telegram exposes a profile photo for this chat. The selector may
     # lazily fetch the small avatar into a local UI cache; export semantics stay
     # text-only and result.json never includes the avatar.
@@ -45,11 +51,14 @@ class GroupInfo:
 class GroupExportPlan:
     group: GroupInfo
     mode: ExportMode
+    category: str = DEFAULT_EXPORT_CATEGORY
     start_at: datetime | None = None
     end_at: datetime | None = None
     last_export_message_id: int = 0
 
     def validate(self) -> None:
+        if not str(self.category).strip():
+            raise ValueError(f"群组「{self.group.title}」必须指定导出分类。")
         if self.mode is ExportMode.DATE_RANGE:
             if self.start_at is None or self.end_at is None:
                 raise ValueError("时间范围模式必须同时指定开始和结束时间。")
