@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-exporter"
-version = "0.1.8"
-description = "Windows GUI batch exporter for Telegram group text messages"
+version = "0.1.9"
+description = "Windows GUI batch exporter and local CLI bridge for Telegram user accounts"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,6 +24,7 @@ dev = [
 [project.scripts]
 tg-exporter = "telegram_exporter.main:main"
 telegram-multi-chat-exporter = "telegram_exporter.main:main"
+tgctl = "telegram_exporter.tgctl:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
