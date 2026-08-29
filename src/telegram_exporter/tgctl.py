@@ -13,21 +13,22 @@ from telethon.errors import FloodWaitError
 
 from .bridge_errors import (
     AMBIGUOUS_CHAT,
+    AUTH_GUI_ONLY,
     CHAT_NOT_FOUND,
+    DAEMON_UNAVAILABLE,
+    EXPORT_IN_PROGRESS,
     FLOOD_WAIT,
     INVALID_ARGUMENT,
     MESSAGE_NOT_FOUND,
     NOT_AUTHORIZED,
     SESSION_BUSY,
     WRITE_FAILED,
+    WRITE_OUTCOME_UNKNOWN,
     TelegramBridgeError,
 )
-from .credentials_store import load_saved_credentials
 from .logging_setup import setup_logging
-from .paths import session_path
-from .proxy import detect_windows_system_proxy
 from .session_lock import SessionBusyError
-from .telegram_service import TelegramService
+from .telegram_proxy import DaemonTelegramProxy
 
 DEFAULT_FORWARD_LIMIT = 20
 LARGE_FORWARD_LIMIT = 200
@@ -141,22 +142,17 @@ def _exit_code(code: str) -> int:
     return {
         INVALID_ARGUMENT: 2,
         NOT_AUTHORIZED: 3,
+        AUTH_GUI_ONLY: 3,
         CHAT_NOT_FOUND: 4,
         MESSAGE_NOT_FOUND: 4,
         AMBIGUOUS_CHAT: 5,
         FLOOD_WAIT: 6,
         WRITE_FAILED: 7,
         SESSION_BUSY: 8,
+        EXPORT_IN_PROGRESS: 9,
+        WRITE_OUTCOME_UNKNOWN: 10,
+        DAEMON_UNAVAILABLE: 11,
     }.get(code, 1)
-
-
-def _chat_dict(group) -> dict[str, Any]:
-    return {
-        "chat_id": group.chat_id,
-        "title": group.title,
-        "username": group.username,
-        "type": group.chat_type,
-    }
 
 
 def _human_print(payload: dict[str, Any]) -> None:
@@ -187,127 +183,74 @@ def emit(payload: dict[str, Any], json_mode: bool) -> None:
         _human_print(payload)
 
 
-async def _connect_existing_session(*, allow_unauthorized: bool = False) -> tuple[TelegramService | None, bool]:
-    creds = load_saved_credentials()
-    if creds is None:
-        if allow_unauthorized:
-            return None, False
-        raise TelegramBridgeError(
-            NOT_AUTHORIZED,
-            "未找到已保存的 Telegram 登录配置。请先打开 TG Exporter 完成 Telegram 登录。",
-        )
-    service = TelegramService(creds, session_path())
-    try:
-        authorized = await service.connect()
-    except Exception:
-        await service.close()
-        raise
-    if not authorized and not allow_unauthorized:
-        await service.close()
-        raise TelegramBridgeError(
-            NOT_AUTHORIZED,
-            "当前 Telegram Session 尚未登录。请先打开 TG Exporter 完成 Telegram 登录。",
-        )
-    return service, authorized
-
-
 async def run_command(args: argparse.Namespace) -> dict[str, Any]:
+    proxy = DaemonTelegramProxy("tgctl")
+
     if args.command == "status":
-        proxy = detect_windows_system_proxy()
-        service, authorized = await _connect_existing_session(allow_unauthorized=True)
-        try:
-            account = await service.account_info() if service and authorized else None
-            return success(
-                {
-                    "authorized": authorized,
-                    "account": account,
-                    "session": SAFE_SESSION_LABEL,
-                    "proxy": proxy.safe_label if proxy else "direct",
-                    "hint": None if authorized else "请先打开 TG Exporter 完成 Telegram 登录",
-                }
-            )
-        finally:
-            if service:
-                await service.close()
+        return success(await proxy.status())
 
     if args.command == "forward":
+        # Keep the client-side guard for immediate feedback; daemon validates it
+        # again so future MCP/clients cannot bypass the safety boundary.
         validate_forward_batch(args.ids, args.allow_large_batch)
 
-    service, _ = await _connect_existing_session()
-    assert service is not None
-    try:
-        if args.command == "chats" and args.chats_command == "list":
-            if args.limit <= 0:
-                raise TelegramBridgeError(INVALID_ARGUMENT, "limit 必须大于 0。")
-            groups = await service.list_groups()
-            if args.folder:
-                folder_key = args.folder.casefold()
-                known_folders = {folder.title.casefold() for group in groups for folder in group.folders}
-                if folder_key not in known_folders:
-                    raise TelegramBridgeError(CHAT_NOT_FOUND, f"找不到 Telegram 分组「{args.folder}」。")
-                groups = [g for g in groups if any(f.title.casefold() == folder_key for f in g.folders)]
-            if args.search:
-                needle = args.search.casefold()
-                groups = [
-                    g
-                    for g in groups
-                    if needle in g.title.casefold() or (g.username and needle in g.username.casefold())
-                ]
-            return success([_chat_dict(group) for group in groups[: args.limit]])
+    if args.command == "chats" and args.chats_command == "list":
+        if args.limit <= 0:
+            raise TelegramBridgeError(INVALID_ARGUMENT, "limit 必须大于 0。")
+        data = await proxy.ipc.request(
+            "chats.list",
+            {"folder": args.folder, "search": args.search, "limit": args.limit},
+        )
+        return success(data)
 
-        if args.command == "messages" and args.messages_command == "search":
-            rows = await service.search_messages(
-                args.chat,
-                contains=args.contains,
-                since=_parse_iso(args.since),
-                until=_parse_iso(args.until),
-                limit=args.limit,
-                case_sensitive=args.case_sensitive,
-            )
-            return success(rows)
+    if args.command == "messages" and args.messages_command == "search":
+        rows = await proxy.search_messages(
+            args.chat,
+            contains=args.contains,
+            since=_parse_iso(args.since),
+            until=_parse_iso(args.until),
+            limit=args.limit,
+            case_sensitive=args.case_sensitive,
+        )
+        return success(rows)
 
-        if args.command == "messages" and args.messages_command == "get":
-            rows = await service.get_messages(args.chat, args.ids)
-            return success(rows)
+    if args.command == "messages" and args.messages_command == "get":
+        return success(await proxy.get_messages(args.chat, args.ids))
 
-        if args.command == "forward":
-            try:
-                result = await service.forward_messages(
-                    args.source_chat,
-                    args.destination_chat,
-                    args.ids,
-                    dry_run=args.dry_run,
-                )
-            except (TelegramBridgeError, FloodWaitError):
-                raise
-            except Exception as exc:
-                raise TelegramBridgeError(WRITE_FAILED, f"Telegram 转发失败：{type(exc).__name__}") from exc
-            return success(result)
+    if args.command == "forward":
+        result = await proxy.forward_messages(
+            args.source_chat,
+            args.destination_chat,
+            args.ids,
+            dry_run=args.dry_run,
+            allow_large_batch=args.allow_large_batch,
+        )
+        return success(result)
 
-        if args.command == "send":
-            try:
-                result = await service.send_text_message(
-                    args.destination_chat,
-                    args.text,
-                    dry_run=args.dry_run,
-                )
-            except (TelegramBridgeError, FloodWaitError):
-                raise
-            except Exception as exc:
-                raise TelegramBridgeError(WRITE_FAILED, f"Telegram 发送失败：{type(exc).__name__}") from exc
-            data = _jsonable(result)
-            if args.dry_run:
-                data["text"] = args.text
-            return success(data)
+    if args.command == "send":
+        result = await proxy.send_text_message(
+            args.destination_chat,
+            args.text,
+            dry_run=args.dry_run,
+        )
+        data = _jsonable(result)
+        if args.dry_run:
+            # Preserve the v0.1.9 human/Codex preview contract. This is stdout
+            # explicitly requested by the user, not an app.log entry.
+            data["text"] = args.text
+        return success(data)
 
-        raise TelegramBridgeError(INVALID_ARGUMENT, "未知命令。")
-    finally:
-        await service.close()
+    raise TelegramBridgeError(INVALID_ARGUMENT, "未知命令。")
 
 
 def main(argv: list[str] | None = None) -> int:
-    setup_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--tg-daemon-worker"]:
+        from .daemon_main import main as daemon_main
+
+        return daemon_main()
+
+    setup_logging()
     json_mode = "--json" in argv
     parser = build_parser()
     try:
