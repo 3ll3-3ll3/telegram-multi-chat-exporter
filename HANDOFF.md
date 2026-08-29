@@ -9,8 +9,7 @@
 - 当前正式版：**TG Exporter v0.1.9**
 - Release：`https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.1.9`
 - PR：`#16`
-- merge commit：`22014f5999867e5d0b0e6c1e46320320fc974cd0`
-- Release target：同上
+- merge commit / Release target：`22014f5999867e5d0b0e6c1e46320320fc974cd0`
 - Release workflow：`33258806323`，结论 success
 
 正式资产 SHA-256：
@@ -22,9 +21,9 @@
 - `tgctl.exe`
   - `028fee5cec1ec6d28edee5e51a605a1560bca9188636d10dec37abc0eb35de53`
 
-## 2. v0.1.8 真人验证仍视为通过
+## 2. 已确认的真人状态
 
-用户在 2026-08-29 明确反馈此前功能“都验证通过”。包括：
+用户在 2026-08-29 明确反馈 v0.1.8 上一轮功能“都验证通过”。因此以下视为真实账号通过：
 
 - 软件内 Export Category 创建/保存/目录自动生成；
 - `output/category/group/timestamp.json` 长期目录结构；
@@ -36,39 +35,29 @@
 
 更早已真人验证：Telegram API 登录、Windows system proxy/Clash transport、Session 保存复用；qasync/shutdown 历史问题已有修复。
 
-## 3. v0.1.9：Codex 本地 Telegram CLI Bridge
+v0.1.9 的 tgctl 真人 E2E 当前仍由用户本机测试中；CI/mock 不能替代真实 Session/search/forward/send 验证。
 
-正式新增 `tgctl`，架构：
-
-```text
-用户
-→ Codex
-→ tgctl.exe
-→ TelegramService
-→ %APPDATA%\TelegramMultiChatExporter\telegram.session
-→ Telethon user account
-```
-
-本版明确不做 MCP、daemon、24/7 listener、自动转发规则、Bot API、AI classifier、联系人/群管理、消息删除、媒体发送/媒体转发。
-
-### CLI 入口
-
-开发环境：
+## 3. v0.1.9 当前架构
 
 ```text
-python -m telegram_exporter.tgctl ...
-tgctl ...
+GUI ───────→ TelegramService ─→ Telethon SQLiteSession
+tgctl ─────→ TelegramService ─→ Telethon SQLiteSession
 ```
 
-Windows Release：
+两个入口使用同一 `%APPDATA%\TelegramMultiChatExporter\telegram.session`，因此由 OS-level `SessionLease` 保证同时只有一个进程直接打开 Session。
+
+结果：
 
 ```text
-tgctl.exe
+GUI owns → tgctl SESSION_BUSY
+tgctl owns → GUI SessionBusyError
 ```
 
-Portable ZIP 内也包含 `tgctl.exe`。
+这仍是 v0.1.9 正式行为。
 
-### 正式命令
+## 4. v0.1.9 tgctl 安全边界继续有效
+
+正式命令：
 
 ```text
 tgctl status
@@ -79,108 +68,156 @@ tgctl forward
 tgctl send
 ```
 
-核心命令支持 `--json`：
+继续保持：
 
-```json
-{"ok":true,"data":{}}
-{"ok":false,"error":{"code":"...","message":"...","details":{}}}
-```
+- `--json` stable envelope/error code；
+- tgctl 不重新做 phone/OTP/2FA 登录；
+- 同名 chat 返回 `AMBIGUOUS_CHAT`；
+- forward 是真正 Telegram forward；
+- send 只发纯文本；
+- forward/send 有 `--dry-run`；
+- forward 默认 20，显式 large batch 后 hard cap 200；
+- FloodWait 不 retry storm；
+- write 日志不记录正文；
+- 真人写测试只优先 Saved Messages。
 
-稳定错误码包括：
+## 5. 当前设计分支
 
-`NOT_AUTHORIZED / CHAT_NOT_FOUND / AMBIGUOUS_CHAT / MESSAGE_NOT_FOUND / FLOOD_WAIT / WRITE_FAILED / INVALID_ARGUMENT / SESSION_BUSY`
-
-## 4. Session / 登录 / 并发规则
-
-- 继续复用 `%APPDATA%\TelegramMultiChatExporter\api_credentials.json`；
-- 继续复用 `%APPDATA%\TelegramMultiChatExporter\telegram.session`；
-- 复用现有 Windows system proxy detection；
-- tgctl 不重新实现 phone / OTP / 2FA 登录；未授权时提示先打开 GUI 登录；
-- GUI 与 tgctl 对同一 Telethon SQLiteSession 使用 OS-level `SessionLease`；
-- GUI 已占用 Session 时 tgctl 应返回 `SESSION_BUSY`，反向同理；
-- 第一版不允许两个独立进程同时打开同一 Telethon SQLiteSession。
-
-未来若做 MCP，应优先升级为单一后台 Telegram daemon 持有 Session，GUI / tgctl / MCP 通过 IPC 调用。
-
-## 5. Read operations
-
-- `status`：安全账号状态，只输出 user id/display name/username、安全 Session 标签、proxy 标签；不得输出 phone/api_hash/OTP/2FA/session contents。
-- `chats list`：复用 `list_groups()`、Telegram Chat Folder membership 和 migrated-group collapse；支持 `--folder / --search / --limit`。
-- `messages search`：支持 chat、contains、since、until、limit、`--case-sensitive`；只读取 text/caption，不下载聊天媒体。
-- `messages get`：按 ids 精确获取；缺失 id 返回 `MESSAGE_NOT_FOUND`。
-- chat reference 支持 marked chat_id、精确 @username、精确 title；同名 title 返回 `AMBIGUOUS_CHAT` 候选，不得静默 first-match。
-
-## 6. Write operations 与安全边界
-
-- `forward` 使用 Telethon 真正 `forward_messages`，支持 `--to me` Saved Messages；不是复制正文再 send。
-- 第一版 forward 只支持本项目允许的 text/caption 范围；媒体消息不得因为加入 CLI 而扩成媒体转发功能。
-- `send` 只发送纯文本，`parse_mode=None`。
-- forward/send 都支持 `--dry-run`。
-- forward 默认最多 20 条；显式 `--allow-large-batch` 后 hard cap 200 条；超过必须拒绝。
-- FloodWait 返回结构化 `FLOOD_WAIT` + `retry_after_seconds`；不得自动疯狂重试。
-- 写日志只记录动作类型、chat/message id、数量、结果、text length；不得记录消息正文。
-- 未来 Agent 不得为了“方便 Codex”绕过 dry-run、批量上限、chat ambiguity、FloodWait 或 Session lock。
-
-## 7. CI / 打包状态
-
-PR #16 和正式 Release CI 均全绿。
-
-Release workflow `33258806323` 已通过：
-
-- pytest；
-- GUI + tgctl import check；
-- GUI one-file build；
-- GUI portable onedir build；
-- standalone `tgctl.exe` build；
-- one-file GUI smoke-test；
-- portable GUI smoke-test；
-- standalone tgctl smoke-test；
-- portable 内 tgctl smoke-test；
-- SHA256SUMS；
-- GitHub Release 创建与资产上传。
-
-## 8. v0.1.9 仍待真人 Telegram E2E
-
-CI/mock 不能替代以下真实账号验证：
-
-1. 关闭 GUI 后 `tgctl status --json` 直接复用已有 Session，无 phone/OTP/2FA；
-2. `chats list --folder` 与真实 Telegram folder 基本一致；
-3. `messages search/get` 返回真实 chat text/caption；
-4. forward dry-run 到 `me` 不产生 Telegram 写入；
-5. 用户确认后真实 forward 到 Saved Messages；
-6. send dry-run 不写入；
-7. 用户确认后真实 send 到 Saved Messages；
-8. GUI 已打开时 tgctl 返回 `SESSION_BUSY`，反向同理；
-9. FloodWait 真实发生时不自动循环重试；不要为了 E2E 故意制造 FloodWait。
-
-真实写操作不要自行向陌生人/陌生群测试；Saved Messages 优先。
-
-## 9. 三种“分组/分类”继续严格区分
-
-- Telegram Chat Folder：账号同步，只读筛选；
-- Focused workspace：GUI 工作群；
-- Export Category：本地 JSON 路径分类。
-
-`tgctl chats list --folder` 只读取第一种，不写回 Telegram，也不影响 Export Category。
-
-## 10. 下一阶段 MCP 方向
-
-推荐：
+分支：
 
 ```text
-single Telegram daemon (owns session)
-├─ GUI IPC client
-├─ tgctl IPC client
-└─ MCP IPC client
+design/single-daemon-ipc-v1
 ```
 
-还需要：
+本分支当前是**架构设计分支，不是运行代码实现分支**。
 
-- IPC protocol；
-- daemon lifecycle / crash recovery；
-- 本机客户端鉴权；
-- MCP tool schema；
-- write confirmation policy；
-- 将 GUI / tgctl 从直接持有 SQLiteSession 迁移为 IPC client。
+用户于 2026-08-29 明确要求开始设计之前讨论的“方案 1”：
 
-在这些完成前，不要让 GUI / tgctl / MCP 三个进程各自打开同一 SQLiteSession。
+```text
+single Telegram daemon owns Session
+├─ GUI IPC client
+├─ tgctl IPC client
+└─ future MCP IPC client
+```
+
+完整设计：
+
+```text
+docs/DAEMON_IPC_DESIGN.md
+```
+
+目标版本建议：**v0.2.0**。
+
+当前设计 PR 合并也不应改变 v0.1.9 二进制行为；实际实施必须另起实现阶段/提交并跑完整 Windows CI。
+
+## 6. 已接受的 daemon 设计核心
+
+### Session ownership
+
+迁移完成后只有 daemon 创建 `TelegramService/TelegramClient` 并获得现有 `SessionLease`。
+
+GUI/tgctl 不再直接打开 SQLiteSession。旧 v0.1.9 进程若仍占用 Session，daemon 仍应通过现有 lock 返回 `SESSION_BUSY`，不得复制 Session 或绕过锁。
+
+### IPC
+
+首选 Windows Named Pipe：
+
+```text
+multiprocessing.connection AF_PIPE
+```
+
+仅使用 `send_bytes/recv_bytes` 传 UTF-8 JSON，禁止 pickle object transport，不开 TCP/Web Server。
+
+IPC identity/auth secret 只保存在兼容 AppData，不进日志/Git/stdout。
+
+### daemon lifecycle
+
+- 按需自动启动；
+- 不注册 Windows Service；
+- 不开机常驻；
+- 不实现 24/7 listener/event rules；
+- GUI 可持有 client lease；
+- 无 lease/job/request 后 idle timeout 自动退出；
+- daemon crash 后 read-only RPC 最多自动恢复/重试一次；
+- write RPC 传输中断绝不自动重试，返回 `WRITE_OUTCOME_UNKNOWN`。
+
+### GUI export
+
+不能把几千/几万条导出消息作为一个巨大 Pipe response 传回 GUI。
+
+设计为：
+
+```text
+GUI submit GroupExportPlan/batch
+→ daemon export job
+→ daemon 内 Telegram fetch
+→ daemon 内 atomic JSON write
+→ daemon 内 checkpoint
+→ optional Option B read ack
+→ GUI 只 poll progress/result
+```
+
+这样继续保证：
+
+```text
+JSON success → checkpoint → optional read ack
+```
+
+### write safety
+
+未来 tgctl/MCP 都可能绕过 CLI parser 直接进入 IPC，因此 daemon 本身必须再次验证：
+
+- dry-run；
+- forward 20/200 cap；
+- destination/chat ambiguity；
+- allowed media scope；
+- FloodWait stop；
+- no-message-body logging。
+
+## 7. 设计阶段明确不做
+
+本设计阶段不实施：
+
+- MCP Server；
+- Windows Service；
+- TCP/Web Server；
+- 24/7 Telegram 监听；
+- 自动规则转发；
+- AI Agent/classifier；
+- 第二 Telegram Session；
+- Bot API；
+- 媒体发送/媒体转发；
+- 联系人/群/管理员管理；
+- 消息删除。
+
+MCP 未来只应作为 same IPCClient 上的一层薄 adapter。
+
+## 8. 推荐实施阶段
+
+按 `docs/DAEMON_IPC_DESIGN.md`：
+
+1. Phase A：AF_PIPE transport/protocol + fake backend；
+2. Phase B：daemon owns TelegramService，先迁 tgctl；
+3. Phase C：迁 GUI read/auth/avatar；
+4. Phase D：迁 GUI export job；
+5. Phase E：lifecycle/crash recovery/PyInstaller；
+6. Phase F：v0.2.0 candidate + 用户真人 E2E。
+
+不能在 Phase B 只迁 tgctl 后就声称已经解决 GUI/tgctl Session ownership；只有 GUI export/auth 等也全部不再直接创建 TelegramClient，架构迁移才完整。
+
+## 9. v0.2.0 Release gate（设计）
+
+至少满足：
+
+- 只有 daemon 获得生产 SessionLease；
+- GUI/tgctl 都通过 IPC；
+- GUI + tgctl 并发 read 不再正常返回 SESSION_BUSY；
+- GUI 导出语义、migration、Option B 全部回归；
+- tgctl v0.1.9 user-facing JSON/exit code 基本兼容；
+- daemon 端也 enforce write safety；
+- write transport failure 不 auto retry；
+- daemon crash/restart 可恢复；
+- 无 TCP/Web server；
+- 无真实 Telegram Secret 进入 CI；
+- Windows packaged smoke 全绿；
+- 真人 Telegram 写操作仍只由用户本机验收。
