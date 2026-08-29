@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from telegram_exporter.bridge_errors import AUTH_GUI_ONLY, EXPORT_IN_PROGRESS, TelegramBridgeError
+from telegram_exporter.bridge_errors import AUTH_GUI_ONLY, EXPORT_IN_PROGRESS, INVALID_ARGUMENT
 from telegram_exporter.daemon_server import DaemonServer
 from telegram_exporter.ipc_protocol import decode_frame, encode_frame, make_request
 
@@ -44,6 +44,40 @@ def test_true_send_is_rejected_before_telegram_when_export_active() -> None:
         assert response["ok"] is False
         assert response["error"]["code"] == EXPORT_IN_PROGRESS
         await server.operations.cancel_export_reservation()
+
+    asyncio.run(scenario())
+
+
+def test_server_revalidates_200_message_hard_cap_before_telegram() -> None:
+    async def scenario() -> None:
+        server = DaemonServer()
+        request = make_request(
+            client_kind="tgctl",
+            app_version="0.2.0",
+            method="forward",
+            params={
+                "source_chat": "-1001",
+                "destination_chat": "me",
+                "ids": list(range(201)),
+                "allow_large_batch": True,
+                "dry_run": False,
+            },
+        )
+        response = decode_frame(await server.handle_bytes(encode_frame(request)))
+        assert response["ok"] is False
+        assert response["error"]["code"] == INVALID_ARGUMENT
+        assert response["error"]["details"]["limit"] == 200
+
+    asyncio.run(scenario())
+
+
+def test_invalid_frame_does_not_decrement_other_active_request_count() -> None:
+    async def scenario() -> None:
+        server = DaemonServer()
+        server.active_requests = 1
+        response = decode_frame(await server.handle_bytes(b"not-json"))
+        assert response["ok"] is False
+        assert server.active_requests == 1
 
     asyncio.run(scenario())
 
