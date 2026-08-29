@@ -29,8 +29,9 @@
   - 指定时间范围；
   - 当前未读；
   - 上次成功导出以后。
-- 只导出文字；**不下载照片、视频、文件、语音、贴纸等媒体**。
+- **聊天消息导出**只保留文字；不下载消息中的照片、视频、文件、语音、贴纸等媒体。
 - 媒体消息如果有 caption，可保留 caption 文字。
+- 唯一媒体例外：群/频道**资料头像**可以仅为群组选择器 UI 按需下载小图并缓存在本机；头像不得写入 `result.json` 或导出批次，也不得扩展成聊天媒体备份。
 - JSON 是权威数据格式；未来若加 HTML，只能作为由 JSON 本地生成的阅读视图，不能成为第二份独立抓取结果。
 - GUI 优先，最终用户不应被要求使用命令行。
 
@@ -41,6 +42,8 @@
 - 主编辑面板只展示用户在“选择群组”中勾选的工作群。
 - 已选群 ID 保存在本地 `settings.json`。
 - 不要退回“登录后把所有群直接铺满主表格”的旧行为。
+- 优先复用 Telegram 账号已有 Chat Folders / Dialog Filters 做筛选。
+- v0.1.7 起选择器头像采用按需加载：默认首字占位，只加载当前屏幕附近可见项，受限并发，本地缓存；头像失败必须静默降级，不得阻断选择器。
 
 ## 4. 未读与已读策略（高风险区域）
 
@@ -88,6 +91,7 @@ RuntimeError: Cannot enter into task ... while another task ... is being execute
 - Telethon 连接后不要在 async slot 中使用会启动嵌套事件循环的 `QDialog.exec()`、静态 `QMessageBox.*()`、静态 `QInputDialog.getText()` 等。
 - 使用现有非阻塞 dialog + await `finished` 的模式。
 - 当前窗口继承链和职责见 `docs/ARCHITECTURE.md`；若要重构，必须先补回归测试，不能简单删掉 qasync-safe 层。
+- 头像异步加载也必须运行在同一个 qasync/asyncio loop；关闭选择器时取消未完成头像任务，不建立第二事件循环。
 - 退出流程必须容忍 Telethon `disconnect()` 在不同事件循环状态下返回 awaitable 或直接完成。
 - shutdown 清理异常不应升级成 PyInstaller 的致命 “Unhandled exception in script” 弹窗。
 
@@ -113,6 +117,7 @@ RuntimeError: Cannot enter into task ... while another task ... is being execute
 - `local_state.json`
 - `settings.json`
 - `logs\app.log`
+- `cache\avatars\`（群组选择器 UI 小头像缓存）
 
 严格禁止提交或打印：
 
@@ -122,6 +127,7 @@ RuntimeError: Cannot enter into task ... while another task ... is being execute
 - 2FA 密码
 - `.session` 内容
 - 用户聊天正文（日志也不要记录）
+- 本地头像缓存二进制
 
 `local_state.json` 只能保存 checkpoint 等必要状态，不保存消息正文。
 
@@ -129,7 +135,7 @@ RuntimeError: Cannot enter into task ... while another task ... is being execute
 
 当前目标是：**纯文本范围内尽量兼容 Telegram Desktop JSON 的结构与常用字段**，不是完整克隆 Telegram Desktop 全量导出器。
 
-不要为了“兼容”而开始下载媒体。
+不要为了“兼容”而开始下载聊天消息媒体。选择器头像只是本地 UI 装饰，不属于 JSON 兼容范围。
 
 已知兼容缺口必须在 `docs/JSON_COMPATIBILITY.md` 保持更新，包括：
 
@@ -179,7 +185,7 @@ Release 还必须验证：
 - SHA256SUMS 生成；
 - Release assets 上传成功。
 
-涉及真实 Telegram 行为时，CI 不能替代真人账号 E2E；在 `HANDOFF.md` 标明仍需用户验证的部分。
+涉及真实 Telegram 行为时，CI 不能替代真人账号 E2E；在 `HANDOFF.md` 标明仍需用户验证的部分。头像功能尤其要由真实账号验证：真实头像是否显示、滚动/筛选是否按需加载、无头像群是否保持首字占位。
 
 ## 11. 交接纪律
 

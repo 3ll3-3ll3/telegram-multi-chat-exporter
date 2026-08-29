@@ -44,3 +44,11 @@ def logs_dir() -> Path:
     path = app_data_dir() / "logs"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def avatar_cache_dir() -> Path:
+    """Local-only cache for small Telegram chat avatars used by the selector UI."""
+
+    path = app_data_dir() / "cache" / "avatars"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
