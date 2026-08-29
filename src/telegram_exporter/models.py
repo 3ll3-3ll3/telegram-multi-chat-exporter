@@ -28,6 +28,10 @@ class GroupInfo:
     unread_count: int = 0
     read_inbox_max_id: int = 0
     latest_message_id: int = 0
+    # Whether Telegram exposes a profile photo for this chat. The selector may
+    # lazily fetch the small avatar into a local UI cache; export semantics stay
+    # text-only and result.json never includes the avatar.
+    has_photo: bool = False
     # Traits below are used only to evaluate Telegram account-side chat folders.
     is_group: bool = False
     is_broadcast: bool = False
