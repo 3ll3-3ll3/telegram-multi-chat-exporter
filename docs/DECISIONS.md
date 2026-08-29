@@ -89,18 +89,18 @@ Codex → local tgctl → TelegramService → Telethon user session
 
 ## D-021：GUI 与 tgctl 不并发打开同一 SQLiteSession
 
-**状态：Accepted（v0.1.9）**
+**状态：Accepted（v0.1.9 baseline；v0.2.0 由 daemon ownership supersede）**
 
-Telethon 默认 Session 为 SQLite。第一版使用 OS-level `SessionLease` 保证同一个本地 Session 同时只有一个 TG Exporter/tgctl 进程拥有。
+Telethon 默认 Session 为 SQLite。v0.1.9 使用 OS-level `SessionLease` 保证同一个本地 Session 同时只有一个 TG Exporter/tgctl 进程拥有。
 
 冲突：
 
 ```text
 GUI already owns → tgctl SESSION_BUSY
-tgctl already owns → GUI SessionBusyError
+tgctl owns → GUI SessionBusyError
 ```
 
-禁止绕过 lock 或复制 Session 来“支持并发”。未来 GUI/CLI/MCP 并发时应改为 single daemon owns Session + IPC。
+禁止绕过 lock 或复制 Session 来“支持并发”。v0.2.0 设计改为 single daemon owns Session；`SessionLease` 继续保留，但只由 daemon 持有，并兼容检测仍在运行的 v0.1.9 旧进程。
 
 ## D-022：tgctl 使用稳定 JSON envelope / error code
 
@@ -113,7 +113,7 @@ tgctl already owns → GUI SessionBusyError
 {"ok":false,"error":{"code":"...","message":"...","details":{}}}
 ```
 
-错误码和非零退出码是 Codex 判断状态的正式接口，不能要求 Codex解析自然语言日志。
+错误码和非零退出码是 Codex 判断状态的正式接口，不能要求 Codex 解析自然语言日志。
 
 GUI Telegram Desktop-style export JSON 与 tgctl RPC-like JSON 是两个不同协议，不要混为一谈。
 
@@ -147,17 +147,78 @@ read commands 可以直接执行；write commands 当前只有 `forward` 和 `se
 
 `send_text_message` 使用 `parse_mode=None`，不发送图片/文件/语音，不做联系人/群管理等副作用。
 
-## D-026：未来 MCP 优先基于 single local daemon
+## D-026：single local Telegram daemon 成为下一阶段正式架构方向
 
-**状态：Future direction**
+**状态：Accepted for design（目标 v0.2.0）**
 
-若升级 MCP，推荐：
+用户于 2026-08-29 明确选择“方案 1”：
 
 ```text
 single Telegram daemon owns Session
-├─ GUI IPC
-├─ tgctl IPC
-└─ MCP IPC
+├─ GUI IPC client
+├─ tgctl IPC client
+└─ future MCP IPC client
 ```
 
-需要 IPC、daemon lifecycle/crash recovery、本机客户端鉴权、MCP tool schema 与 write confirmation policy；当前 v0.1.9 不实现。
+目的：解决 v0.1.9 GUI 与 tgctl 不能同时使用同一 SQLiteSession 的 `SESSION_BUSY` 体验，同时不复制 Session、不绕过 lock。
+
+当前只开始设计，不在本设计 PR 中实施运行代码。完整方案见 `docs/DAEMON_IPC_DESIGN.md`。
+
+## D-027：IPC 第一选择 Windows Named Pipe + JSON bytes，不开本地 Web/TCP Server
+
+**状态：Accepted for design（目标 v0.2.0）**
+
+首选 Python 标准库 Windows `AF_PIPE`：
+
+- `multiprocessing.connection.Listener/Client`；
+- authkey 本地 challenge-response；
+- 只使用 `send_bytes/recv_bytes` 传 UTF-8 JSON；
+- 禁止使用 pickle object send/recv；
+- 不监听 LAN、不占 TCP 端口；
+- IPC identity/secret 保存在兼容 AppData，本地且不记录日志。
+
+如果实现期证明 AF_PIPE/PyInstaller 存在不可接受的阻塞性问题，必须先更新本决策和设计文档再更换 transport，不能静默切成 Web Server。
+
+## D-028：GUI 大导出在 daemon 内执行 job，不把全部聊天正文一次跨 IPC
+
+**状态：Accepted for design（目标 v0.2.0）**
+
+当前 `exporter.py` 直接依赖 `TelegramClient.iter_messages()`。为避免几千/几万条消息被一次性复制成超大 Pipe response，迁移后采用：
+
+```text
+GUI submit export plan
+→ daemon export job
+→ daemon 内 Telegram fetch
+→ daemon 内 atomic JSON write
+→ daemon 内 checkpoint
+→ optional Option B read ack
+→ GUI 只读 progress/result
+```
+
+这样也能把关键顺序继续固定为：
+
+```text
+JSON success → checkpoint → optional read ack
+```
+
+## D-029：写操作的安全校验必须在 daemon 端再次执行
+
+**状态：Accepted for design（目标 v0.2.0）**
+
+未来 GUI/tgctl/MCP 都可能直接进入 daemon，因此不能只依赖 tgctl argparse 做 safety validation。
+
+Daemon 是最终 write-policy boundary，必须再次验证 dry-run、20/200 cap、chat ambiguity、allowed media scope、FloodWait stop 和 no-message-body logging。
+
+## D-030：IPC 断开后的 Telegram 写操作不自动重试
+
+**状态：Accepted for design（目标 v0.2.0）**
+
+如果 daemon 在 Telegram 已可能成功写入、但尚未把 response 返回客户端时崩溃，客户端无法可靠判断实际结果。
+
+因此：
+
+- read-only RPC 在 daemon restart 后最多可自动重试一次；
+- forward/send 等 write RPC 在 transport loss 后**禁止自动重试**；
+- 返回 `WRITE_OUTCOME_UNKNOWN`，要求用户/Codex先核对目标聊天再决定是否重试。
+
+该规则用于防止 daemon crash recovery 造成重复发送/重复转发。
