@@ -433,6 +433,22 @@ class MainWindow(AsyncMainWindow):
             else:
                 status_item.setText("待导出")
 
+    def bulk_recent_10(self) -> None:
+        """Override the legacy base-table column indexes after adding 分类."""
+
+        today = QDate.currentDate()
+        for row in range(self.table.rowCount()):
+            check = self.table.cellWidget(row, 0)
+            if not isinstance(check, QCheckBox) or not check.isChecked():
+                continue
+            mode = self.table.cellWidget(row, 3)
+            start = self.table.cellWidget(row, 4)
+            end = self.table.cellWidget(row, 5)
+            assert isinstance(mode, QComboBox) and isinstance(start, QDateEdit) and isinstance(end, QDateEdit)
+            mode.setCurrentIndex(mode.findData(ExportMode.DATE_RANGE.value))
+            start.setDate(today.addDays(-9))
+            end.setDate(today)
+
     def _plans(self) -> list[tuple[int, GroupExportPlan, bool]]:
         plans: list[tuple[int, GroupExportPlan, bool]] = []
         local_tz = datetime.now().astimezone().tzinfo or timezone.utc
