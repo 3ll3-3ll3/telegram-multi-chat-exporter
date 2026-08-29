@@ -8,35 +8,30 @@
 
 ### 最新正式 Release
 
-- 当前已发布：**TG Exporter v0.1.6**
-- 仓库已改短名：`https://github.com/3ll3-3ll3/tg-exporter`
-- Release: `https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.1.6`
-- Release target commit: `531c31495cf10770943b45d2850e2b5ce71c6553`
-- Release workflow run: `33162898643`，全部成功。
+- 当前已发布：**TG Exporter v0.1.7**
+- 仓库：`https://github.com/3ll3-3ll3/tg-exporter`
+- Release: `https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.1.7`
+- Release target commit: `63034d2e15677e2579af5763a89b8a9fe81143ff`
+- Release workflow run: `33227209870`，全部成功。
 - 正式分发：GitHub Releases（不是 Actions Artifact）。
-- 正式单文件：`TGExporter-v0.1.6-windows-x64.exe`
-- EXE SHA-256：`37636dd62e481a4934104ceac2f8591238f9ec59696b78e1d475cda2e326ecef`
-- Portable：`TGExporter-v0.1.6-windows-x64-portable.zip`
+- 正式单文件：`TGExporter-v0.1.7-windows-x64.exe`
+- EXE SHA-256：`22a67e7551cb60e983734106aa9cc92b2f48dce85c8142372f11668252f03629`
+- Portable：`TGExporter-v0.1.7-windows-x64-portable.zip`
+- Portable SHA-256：`0fb39d291de486972a98701791a3dd21e5005d18cec80c61004077fc702c48b3`
 
-### v0.1.7 candidate
+v0.1.7 正式包含群组选择器头像与大尺寸记录：
 
-当前功能分支：`feat/group-avatar-selector-v0.1.7`。
-
-目标：让“选择群组”在大量群组账号中更容易识别目标。
-
-已实现：
-
-- 选择器每条记录使用约 **42 px 圆形头像 + 58 px 行高**；
+- 约 **42 px 圆形头像 + 58 px 行高**；
 - 双行信息：群名 + `@username` / 群组或频道 / 未读数；
-- 没有头像或头像尚未加载时使用确定性的圆形首字占位；
+- 无头像或头像尚未加载时使用确定性的圆形首字占位；
 - Telegram 小头像只对当前屏幕附近可见项**按需异步加载**；
 - 最大头像并发 6，避免账号有数百群时突发下载；
 - 成功头像缓存在 `%APPDATA%\TelegramMultiChatExporter\cache\avatars\`，默认约 7 天；
-- 头像失败只保留占位，不得影响选择器、登录或导出；
+- 头像失败只保留占位，不影响选择器、登录或导出；
 - 头像只是 UI 元数据，不进入 `result.json`，不复制到导出批次；
 - 聊天消息本身仍严格 text/caption-only，不下载聊天里的图片/视频/文件。
 
-`VERSION=v0.1.7`，`pyproject.toml=0.1.7`。PR Windows CI 全绿后应以 `release: v0.1.7` squash merge 到 main，由 release workflow 创建正式 Release。
+正式 Release 流水线已通过：Test、GUI import、one-file build、portable build、两种 packaged smoke-test、release assets 和 GitHub Release 上传。
 
 ## 2. 用户已实际验证过什么
 
@@ -59,6 +54,7 @@
 - 关闭窗口是否不再弹 `Unhandled exception in script`；
 - 新 `TGExporter.exe` 是否无缝复用旧 AppData Session/settings；
 - **v0.1.7 真实群头像是否正确显示，滚动/分组/搜索时是否按需加载且不卡顿；**
+- 无头像群是否稳定显示首字占位；
 - 五个以上群的混合模式完整批次导出；
 - `导出后标已读` 对手机/桌面端 read marker 的真实同步验证；
 - 与 Telegram Desktop 同一群/同一时间窗口的 JSON differential test。
@@ -71,7 +67,7 @@
 - 本地轮转日志、API 设置、重置登录、打开日志目录。
 - 完整账号群组只作为后台 catalogue。
 - `选择群组` 中可先选择 Telegram 账号已有 Chat Folder，再按群名 / `@username` 搜索和勾选。
-- v0.1.7 candidate：选择器加入按需加载的圆形群头像与更大的双行记录。
+- v0.1.7 起选择器显示按需加载的圆形群头像与更大的双行记录。
 - Telegram 文件夹只读；读取失败时退化为完整 catalogue + 搜索。
 - 主面板只显示最终勾选的工作群，选择跨启动持久化。
 - 每群独立模式：指定时间范围 / 当前未读 / 上次导出以后。
@@ -141,7 +137,7 @@ JSON 兼容缺口见 `docs/JSON_COMPATIBILITY.md`：rich text、真实 chat type
 
 优先级：
 
-- P0/P1：完成并真人验证 v0.1.7 avatar selector；继续验证 Telegram Folder、shutdown、旧 AppData 数据复用、Option B frozen upper bound。
+- P0/P1：真人验证 v0.1.7 avatar selector；继续验证 Telegram Folder、shutdown、旧 AppData 数据复用、Option B frozen upper bound。
 - P1：`result.json` atomic write；重复清洗群名目录 collision；Desktop chat type/top-level id；原样 whitespace。
 - P2：rich text；forward/service；每行实时进度/失败重试；GUI 三层收敛但保持 qasync safety。
 
@@ -181,7 +177,7 @@ Telegram read marker 按 ID 推进，因此快照内未进入 JSON 的媒体/系
 
 - `VERSION` 与 `pyproject.toml` 必须一致。
 - 正式分发只用 GitHub Releases。
-- v0.1.7 PR CI 通过后发布，并把本文件 candidate 状态改成已发布。
+- 当前正式版为 v0.1.7；main 在本次 HANDOFF 更新之前无额外功能性未发布变更。
 - 用户重点验证：①真实群头像；②滚动/Telegram 分组/搜索切换时不卡顿；③无头像群使用首字占位；④旧 Session/settings 继续复用。
 - 之后继续 JSON compatibility、atomic output 等工作。
 
