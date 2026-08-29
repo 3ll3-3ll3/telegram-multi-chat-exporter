@@ -5,6 +5,11 @@ def friendly_error_message(exc: Exception) -> str:
     name = type(exc).__name__
     message = str(exc).strip()
 
+    if name == "SessionBusyError":
+        return (
+            "Telegram Session 正在被另一个 TG Exporter/tgctl 进程使用。"
+            "请关闭另一个 TG Exporter 窗口，或等待正在执行的 tgctl 命令结束后重试。"
+        )
     if name in {"ApiIdInvalidError", "ApiIdInvalid"}:
         return "API ID / API Hash 无效或不匹配。请打开『API 设置』，从 my.telegram.org → API development tools 重新复制你自己的 api_id 和 api_hash。"
     if name == "ApiIdPublishedFloodError":
