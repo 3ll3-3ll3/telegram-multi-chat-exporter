@@ -119,6 +119,11 @@ class GroupSelectorDialog(QDialog):
         self.resize(820, 760)
         self._groups = groups
         self._groups_by_id = {group.chat_id: group for group in groups}
+        if avatar_loader is None:
+            service = getattr(parent, "service", None)
+            candidate = getattr(service, "group_avatar_bytes", None)
+            if callable(candidate):
+                avatar_loader = candidate
         self._avatar_loader = avatar_loader
         self._avatar_tasks: dict[int, asyncio.Task[None]] = {}
         self._avatar_attempted: set[int] = set()
