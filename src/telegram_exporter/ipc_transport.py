@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -40,7 +41,7 @@ def call_once(identity: IPCIdentity, payload: bytes) -> bytes:
     address, family = pipe_address(identity)
     try:
         connection = Client(address, family=family, authkey=identity.authkey)
-    except (OSError, EOFError, ConnectionError) as exc:
+    except (OSError, EOFError, ConnectionError, AuthenticationError) as exc:
         raise IPCConnectError(f"无法连接 TG daemon：{type(exc).__name__}") from exc
 
     sent = False
@@ -48,7 +49,7 @@ def call_once(identity: IPCIdentity, payload: bytes) -> bytes:
         connection.send_bytes(payload)
         sent = True
         return connection.recv_bytes(MAX_FRAME_BYTES)
-    except (OSError, EOFError, ConnectionError) as exc:
+    except (OSError, EOFError, ConnectionError, AuthenticationError) as exc:
         raise IPCTransportError(
             f"TG daemon IPC 连接中断：{type(exc).__name__}",
             stage="after_send" if sent else "before_send",
@@ -119,6 +120,10 @@ class PipeServer:
             while not self._stop.is_set():
                 try:
                     connection = self._listener.accept()
+                except AuthenticationError:
+                    # A process with a wrong local authkey must not be able to
+                    # kill the daemon accept loop. Drop it and keep serving.
+                    continue
                 except (OSError, EOFError):
                     if self._stop.is_set():
                         break
