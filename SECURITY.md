@@ -13,6 +13,7 @@
 - `*.session` / session journal
 - 用户聊天正文
 - 用户真实导出文件
+- 本地群头像缓存二进制
 
 ## Local runtime files
 
@@ -30,9 +31,12 @@ telegram.session
 local_state.json
 settings.json
 logs\app.log
+cache\avatars\*
 ```
 
 这些文件不是发布资产。
+
+`cache\avatars\` 仅保存群/频道资料小头像，用于“选择群组”界面快速识别；头像不进入 `result.json` 或导出批次，缓存失败/缺失不得影响主功能。
 
 ## Logging rules
 
@@ -49,7 +53,8 @@ logs\app.log
 - api_hash；
 - phone/code/2FA；
 - Session 内容；
-- message body。
+- message body；
+- 头像二进制或 base64。
 
 新增 debug 日志时，先判断对象的 `repr()` 是否可能泄露敏感字段。
 
@@ -67,6 +72,8 @@ result.json success → checkpoint success → optional read ack
 
 导出失败不得改变 read marker。
 
+读取 Chat Folders、读取群资料头像、刷新 catalogue 均是只读操作，不得发送 read acknowledgement。
+
 不要增加自动发消息、删除消息、退群、改群设置等写操作，除非用户明确新增产品需求且 UI 明示该副作用。
 
 ## Build and release
@@ -76,7 +83,7 @@ GitHub Actions 不需要 Telegram Secret。正式发布产物来自仓库源码�
 正式用户下载入口：
 
 ```text
-https://github.com/3ll3-3ll3/telegram-multi-chat-exporter/releases/latest
+https://github.com/3ll3-3ll3/tg-exporter/releases/latest
 ```
 
 Release 应包含 SHA256SUMS。
