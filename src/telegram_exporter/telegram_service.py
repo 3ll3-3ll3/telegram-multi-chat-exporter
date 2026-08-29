@@ -45,6 +45,18 @@ def _entity_has_photo(entity) -> bool:
     return photo is not None and photo.__class__.__name__ not in {"ChatPhotoEmpty", "UserProfilePhotoEmpty"}
 
 
+def _migrated_target_peer_id(entity) -> int | None:
+    """Return the current supergroup peer id for a migrated legacy basic Chat."""
+
+    migrated_to = getattr(entity, "migrated_to", None)
+    if migrated_to is None:
+        return None
+    try:
+        return int(get_peer_id(migrated_to))
+    except (TypeError, ValueError):
+        return None
+
+
 class TelegramService:
     def __init__(self, credentials: ApiCredentials, session_file: Path):
         self.proxy: ProxyConfig | None = detect_windows_system_proxy()
@@ -110,32 +122,57 @@ class TelegramService:
     async def list_groups(self) -> list[GroupInfo]:
         logger.info("Loading Telegram dialogs")
         groups: list[GroupInfo] = []
+        eligible_dialogs = []
         try:
             async for dialog in self.client.iter_dialogs():
-                if not (dialog.is_group or dialog.is_channel):
-                    continue
-                entity = dialog.entity
-                unread_count = int(dialog.unread_count or 0)
-                unread_mark = bool(getattr(dialog.dialog, "unread_mark", False))
-                groups.append(
-                    GroupInfo(
-                        chat_id=int(get_peer_id(entity)),
-                        title=dialog.name or str(get_peer_id(entity)),
-                        username=getattr(entity, "username", None),
-                        unread_count=unread_count,
-                        read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
-                        latest_message_id=int(getattr(dialog.message, "id", 0) or 0),
-                        has_photo=_entity_has_photo(entity),
-                        is_group=bool(dialog.is_group),
-                        is_broadcast=bool(dialog.is_channel and not dialog.is_group),
-                        is_muted=_dialog_is_muted(dialog),
-                        is_archived=bool(getattr(dialog, "archived", False)),
-                        is_unread=bool(unread_count > 0 or unread_mark),
-                    )
-                )
+                if dialog.is_group or dialog.is_channel:
+                    eligible_dialogs.append(dialog)
         except Exception:
             logger.exception("Loading Telegram dialogs failed")
             raise
+
+        # Telegram keeps the old basic Chat after it is upgraded to a
+        # supergroup. Official clients hide that legacy row. Keep its peer id as
+        # migration metadata on the current supergroup instead of showing both.
+        migrated_from_by_target: dict[int, int] = {}
+        for dialog in eligible_dialogs:
+            entity = dialog.entity
+            target_id = _migrated_target_peer_id(entity)
+            if target_id is not None:
+                migrated_from_by_target[target_id] = int(get_peer_id(entity))
+                continue
+
+            unread_count = int(dialog.unread_count or 0)
+            unread_mark = bool(getattr(dialog.dialog, "unread_mark", False))
+            groups.append(
+                GroupInfo(
+                    chat_id=int(get_peer_id(entity)),
+                    title=dialog.name or str(get_peer_id(entity)),
+                    username=getattr(entity, "username", None),
+                    unread_count=unread_count,
+                    read_inbox_max_id=int(getattr(dialog.dialog, "read_inbox_max_id", 0) or 0),
+                    latest_message_id=int(getattr(dialog.message, "id", 0) or 0),
+                    has_photo=_entity_has_photo(entity),
+                    is_group=bool(dialog.is_group),
+                    is_broadcast=bool(dialog.is_channel and not dialog.is_group),
+                    is_muted=_dialog_is_muted(dialog),
+                    is_archived=bool(getattr(dialog, "archived", False)),
+                    is_unread=bool(unread_count > 0 or unread_mark),
+                )
+            )
+
+        collapsed = 0
+        for group in groups:
+            old_id = migrated_from_by_target.get(group.chat_id)
+            if old_id is not None:
+                group.migrated_from_chat_id = old_id
+                collapsed += 1
+        if migrated_from_by_target:
+            logger.info(
+                "Collapsed %s migrated legacy basic-group rows; %s matched current supergroups",
+                len(migrated_from_by_target),
+                collapsed,
+            )
 
         # Telegram calls account-side chat folders "dialog filters". Folder
         # loading is deliberately non-fatal: if the API/schema ever changes,
