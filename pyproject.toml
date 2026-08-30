@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-exporter"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows GUI Telegram exporter, single-daemon bridge, and personal-account reader"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,7 +27,8 @@ telegram-multi-chat-exporter = "telegram_exporter.main:main"
 tgctl = "telegram_exporter.tgctl:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "src"
+}
 
 [tool.setuptools.packages.find]
 where = ["src"]
