@@ -76,6 +76,11 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             self._owner_visibility_hint[row.chat_id] = "available"
         elif not available:
             self._owner_visibility_hint[row.chat_id] = "participants_unavailable"
+        elif row.dialog_type == "group":
+            # Basic-group GetFullChat returns the complete visible participant
+            # structure in one response, so a complete list with no creator is
+            # a meaningful not-found result rather than a pagination ambiguity.
+            self._owner_visibility_hint[row.chat_id] = "not_found"
         else:
             self._owner_visibility_hint[row.chat_id] = "telegram_not_returned"
         return snapshot, available
