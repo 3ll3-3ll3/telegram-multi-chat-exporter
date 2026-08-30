@@ -114,14 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     messages = sub.add_parser("messages")
     messages_sub = messages.add_subparsers(dest="messages_command", required=True)
+
     search = messages_sub.add_parser("search")
-    search.add_argument("--chat", required=True)
+    search.add_argument("--chat")
     search.add_argument("--contains")
+    search.add_argument("--sender-id", type=int)
+    search.add_argument("--sender-role", choices=["owner", "admin", "member"])
     search.add_argument("--since")
     search.add_argument("--until")
+    search.add_argument("--message-type")
+    search.add_argument("--topic", dest="topic_id", type=int)
+    search.add_argument("--has-link", choices=["yes", "no", "all"], default="all")
+    search.add_argument("--url-domain")
+    search.add_argument("--cursor")
     search.add_argument("--limit", type=int, default=100)
     search.add_argument("--case-sensitive", action="store_true")
-    _add_json_flag(search)
+    search.add_argument("--legacy-schema", action="store_true", help="使用 v0.1.x 单会话简化搜索结果")
+    _add_page_output_flags(search)
 
     history = messages_sub.add_parser("history")
     history.add_argument("--chat", required=True)
@@ -136,6 +145,23 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--ids", nargs="+", type=int, required=True)
     get.add_argument("--legacy-schema", action="store_true", help="临时保留 v0.1.x 简化消息 schema")
     _add_json_flag(get)
+
+    topics = sub.add_parser("topics")
+    topics_sub = topics.add_subparsers(dest="topics_command", required=True)
+    topics_list = topics_sub.add_parser("list")
+    topics_list.add_argument("--chat", required=True)
+    topics_list.add_argument("--cursor")
+    topics_list.add_argument("--limit", type=int, default=100)
+    _add_page_output_flags(topics_list)
+
+    topics_history = topics_sub.add_parser("history")
+    topics_history.add_argument("--chat", required=True)
+    topics_history.add_argument("--topic", dest="topic_id", required=True, type=int)
+    topics_history.add_argument("--cursor")
+    topics_history.add_argument("--limit", type=int, default=100)
+    topics_history.add_argument("--since")
+    topics_history.add_argument("--until")
+    _add_page_output_flags(topics_history)
 
     forward = sub.add_parser("forward")
     forward.add_argument("--from", dest="source_chat", required=True)
@@ -258,17 +284,43 @@ def emit(payload: dict[str, Any], json_mode: bool, jsonl_mode: bool = False) -> 
             return
         data = payload.get("data") or {}
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            print(json.dumps({"type": "error", "ok": False, "error": {"code": INVALID_ARGUMENT, "message": "该命令不支持 JSONL page 输出。"}}, ensure_ascii=False, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {"type": "error", "ok": False, "error": {"code": INVALID_ARGUMENT, "message": "该命令不支持 JSONL page 输出。"}},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
             return
         print(json.dumps({"type": "meta", "ok": True, "data": {"schema": READER_SCHEMA}}, ensure_ascii=False, separators=(",", ":")))
         for item in data["items"]:
             print(json.dumps({"type": "item", "data": item}, ensure_ascii=False, separators=(",", ":")))
-        end = {key: data.get(key) for key in ("count", "next_cursor", "has_more", "timing", "scanned_count", "matched_count") if key in data}
+        end = {
+            key: data.get(key)
+            for key in ("count", "next_cursor", "has_more", "timing", "scanned_count", "matched_count")
+            if key in data
+        }
         print(json.dumps({"type": "end", "data": end}, ensure_ascii=False, separators=(",", ":")))
     elif json_mode:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
         _human_print(payload)
+
+
+def _advanced_search_requested(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.sender_id is not None,
+            args.sender_role is not None,
+            args.message_type is not None,
+            args.topic_id is not None,
+            args.has_link != "all",
+            args.url_domain is not None,
+            args.cursor is not None,
+            args.jsonl,
+            args.chat is None,
+        )
+    )
 
 
 async def run_command(args: argparse.Namespace) -> dict[str, Any]:
@@ -298,8 +350,6 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     if args.command == "forward":
-        # Keep the client-side guard for immediate feedback; daemon validates it
-        # again so future MCP/clients cannot bypass the safety boundary.
         validate_forward_batch(args.ids, args.allow_large_batch)
 
     if args.command == "chats" and args.chats_command == "list":
@@ -323,15 +373,43 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     if args.command == "messages" and args.messages_command == "search":
-        rows = await proxy.search_messages(
-            args.chat,
-            contains=args.contains,
-            since=_parse_iso(args.since),
-            until=_parse_iso(args.until),
-            limit=args.limit,
-            case_sensitive=args.case_sensitive,
+        since = _parse_iso(args.since)
+        until = _parse_iso(args.until)
+        if args.legacy_schema:
+            if args.chat is None:
+                raise TelegramBridgeError(INVALID_ARGUMENT, "legacy search 必须指定 --chat。")
+            if _advanced_search_requested(args):
+                raise TelegramBridgeError(INVALID_ARGUMENT, "--legacy-schema 不支持第三代高级搜索参数。")
+            rows = await proxy.search_messages(
+                args.chat,
+                contains=args.contains,
+                since=since,
+                until=until,
+                limit=args.limit,
+                case_sensitive=args.case_sensitive,
+            )
+            return success(rows)
+        return success(
+            await proxy.ipc.request(
+                "messages.search",
+                {
+                    "schema": "v3",
+                    "chat": args.chat,
+                    "contains": args.contains,
+                    "sender_id": args.sender_id,
+                    "sender_role": args.sender_role,
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                    "message_type": args.message_type,
+                    "topic_id": args.topic_id,
+                    "has_link": args.has_link,
+                    "url_domain": args.url_domain,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                    "case_sensitive": args.case_sensitive,
+                },
+            )
         )
-        return success(rows)
 
     if args.command == "messages" and args.messages_command == "history":
         since = _parse_iso(args.since)
@@ -359,6 +437,31 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
 
+    if args.command == "topics" and args.topics_command == "list":
+        return success(
+            await proxy.ipc.request(
+                "topics.list",
+                {"chat": args.chat, "cursor": args.cursor, "limit": args.limit},
+            )
+        )
+
+    if args.command == "topics" and args.topics_command == "history":
+        since = _parse_iso(args.since)
+        until = _parse_iso(args.until)
+        return success(
+            await proxy.ipc.request(
+                "topics.history",
+                {
+                    "chat": args.chat,
+                    "topic_id": args.topic_id,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
+        )
+
     if args.command == "forward":
         result = await proxy.forward_messages(
             args.source_chat,
@@ -377,8 +480,6 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
         )
         data = _jsonable(result)
         if args.dry_run:
-            # Preserve the v0.1.9 human/Codex preview contract. This is stdout
-            # explicitly requested by the user, not an app.log entry.
             data["text"] = args.text
         return success(data)
 
