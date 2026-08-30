@@ -30,7 +30,7 @@ jobs:
         run: pytest -q
 
       - name: GUI + reader import check
-        run: python -c "import telegram_exporter.gui; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; print('GUI + tgctl + reader import OK')"
+        run: python -c "import telegram_exporter.gui; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + tgctl + reader import OK')"
 
       - name: Build TGExporter EXE
         shell: pwsh
@@ -82,9 +82,7 @@ jobs:
             Write-Host "packaged tgctl stdout: $stdout"
             if ($stderr) { Write-Host "packaged tgctl stderr: $stderr" }
 
-            if (-not $stdout) {
-              throw "Packaged tgctl produced no JSON stdout"
-            }
+            if (-not $stdout) { throw "Packaged tgctl produced no JSON stdout" }
             $payload = $stdout | ConvertFrom-Json
             if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
               throw "Expected packaged tgctl JSON error SESSION_BUSY; got: $stdout"
@@ -108,12 +106,23 @@ jobs:
           & .\dist\tgctl\tgctl.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Candidate SHA-256
+        shell: pwsh
+        run: |
+          $gui = (Get-FileHash .\dist\TGExporter.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cli = (Get-FileHash .\dist\tgctl\tgctl.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$gui  TGExporter.exe" | Set-Content -Encoding ascii CANDIDATE_SHA256SUMS.txt
+          "$cli  tgctl.exe" | Add-Content -Encoding ascii CANDIDATE_SHA256SUMS.txt
+          Write-Host "TGExporter.exe SHA-256: $gui"
+          Write-Host "tgctl.exe SHA-256: $cli"
+
       - name: Upload EXEs
         uses: actions/upload-artifact@v4
         with:
-          name: TGExporter-windows-x64
+          name: TGExporter-v0.3.0-candidate-windows-x64
           path: |
             dist/TGExporter.exe
             dist/tgctl/tgctl.exe
+            CANDIDATE_SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
