@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from .bridge_errors import INVALID_ARGUMENT, TelegramBridgeError
+from .reader_media import media_download
 from .reader_runtime import PersonalAccountReaderV3
 from .reader_search import search_messages_page
 from .reader_topics import topic_history_page, topics_page
@@ -16,6 +17,7 @@ READER_METHODS = {
     "messages.history",
     "topics.list",
     "topics.history",
+    "media.download",
 }
 
 
@@ -113,6 +115,15 @@ async def dispatch_reader(server: Any, method: str, params: dict[str, Any]) -> A
                 limit=int(params.get("limit", 100)),
                 since=_parse_iso(params.get("since")),
                 until=_parse_iso(params.get("until")),
+            )
+        if method == "media.download":
+            return await media_download(
+                reader,
+                params.get("chat", ""),
+                [int(value) for value in (params.get("ids") or [])],
+                str(params.get("output") or ""),
+                confirm=params.get("confirm"),
+                allow_large_download=bool(params.get("allow_large_download", False)),
             )
         raise TelegramBridgeError(INVALID_ARGUMENT, f"未知 reader method：{method}")
 
