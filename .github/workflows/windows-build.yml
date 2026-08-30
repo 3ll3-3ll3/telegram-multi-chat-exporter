@@ -66,11 +66,28 @@ jobs:
               throw "Session lock holder did not become ready"
             }
 
-            $raw = & .\dist\tgctl\tgctl.exe status --json 2>$null
-            $exitCode = $LASTEXITCODE
-            $payload = $raw | ConvertFrom-Json
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = (Resolve-Path ".\dist\tgctl\tgctl.exe").Path
+            $psi.Arguments = "status --json"
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $process = [System.Diagnostics.Process]::Start($psi)
+            $stdout = $process.StandardOutput.ReadToEnd().Trim()
+            $stderr = $process.StandardError.ReadToEnd().Trim()
+            $process.WaitForExit()
+            $exitCode = $process.ExitCode
+
+            Write-Host "packaged tgctl exit code: $exitCode"
+            Write-Host "packaged tgctl stdout: $stdout"
+            if ($stderr) { Write-Host "packaged tgctl stderr: $stderr" }
+
+            if (-not $stdout) {
+              throw "Packaged tgctl produced no JSON stdout"
+            }
+            $payload = $stdout | ConvertFrom-Json
             if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
-              throw "Expected packaged tgctl JSON error SESSION_BUSY; got: $raw"
+              throw "Expected packaged tgctl JSON error SESSION_BUSY; got: $stdout"
             }
             if ($exitCode -ne 8) {
               throw "Expected packaged tgctl exit code 8 for SESSION_BUSY; got $exitCode"
