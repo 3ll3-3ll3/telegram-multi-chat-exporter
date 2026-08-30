@@ -69,8 +69,8 @@ async def topics_page(
     network_started = time.perf_counter()
     try:
         result = await reader.client(
-            functions.channels.GetForumTopicsRequest(
-                channel=entity,
+            functions.messages.GetForumTopicsRequest(
+                peer=entity,
                 q=None,
                 offset_date=offset_date,
                 offset_id=offset_id,
