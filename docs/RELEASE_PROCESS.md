@@ -1,14 +1,22 @@
 # Release Process
 
-本文件定义 TG Exporter Windows 正式版本发布流程。正式用户下载入口是 GitHub Releases，不是 Actions Artifact。
+TG Exporter 正式用户下载入口是 **GitHub Releases**，不是 Actions Artifact。Windows build / Candidate / rollback 的可执行步骤同时见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
 
-## 1. 什么时候需要 Release
+## 1. Production vs Candidate
 
-需要：用户可见功能变化、Telegram 行为变化、影响 EXE/tgctl 的 bug 修复、依赖/打包方式变化、需要用户重新下载验证的修复。
+- Production：已发布 GitHub Release；
+- Candidate：Actions Artifact，仅供测试/真人验收；
+- `main` 是正式线；开发分支/PR 可以包含未发布的下一代架构。
 
-通常不需要：纯文档修改、不影响二进制行为的注释。
+截至 2026-08-30，Production 为 v0.1.10；v0.3.0 在 Draft PR #20 中，尚未发布。实时值以 `HANDOFF.md` + GitHub 为准。
 
-## 2. 发布前状态检查
+## 2. 什么时候需要 Release
+
+需要：用户可见 runtime 功能、Telegram 行为、EXE/tgctl bug、依赖/打包方式发生需要用户重新下载的变化。
+
+通常不需要：纯文档/注释且二进制行为不变。
+
+## 3. 发布前恢复/安全检查
 
 先读：
 
@@ -16,35 +24,41 @@
 AGENTS.md
 HANDOFF.md
 docs/ARCHITECTURE.md
+docs/SECURITY_MODEL.md
+SECURITY.md
 docs/DECISIONS.md
 docs/TESTING.md
-SECURITY.md
+docs/DEPLOYMENT.md
 ```
 
-涉及 CLI/Codex 还必须读 `docs/CODEX_TGCTL.md`。
+再核对 GitHub 当前：main、开发 branch、PR、CI、Latest Release/Tag。
 
 确认：
 
-- 从最新 main 开发；
-- 没有遗漏的冲突/未合并依赖；
-- 没有 Session/API 凭据/日志/真实聊天正文进入仓库；
-- 新行为有单元测试；
-- HANDOFF 明确区分 CI 与真人 Telegram E2E；
-- Telegram write safety 没被绕过。
+- feature/fix 来自正确正式基线；
+- 没有遗漏 integration conflict；
+- 没有 Session/credentials/聊天正文进入 repo/CI；
+- 新行为有 regression；
+- HANDOFF 区分 automated vs human E2E；
+- Telegram write safety 未弱化；
+- 没有覆盖/移动历史 Release/tag；
+- 用户要求的 human release gate 已满足。
 
-## 3. 版本号
+## 4. 版本号
 
-采用 `vMAJOR.MINOR.PATCH` 风格。发布时同步：
+正式发布同步：
 
-1. 根目录 `VERSION`；
-2. `pyproject.toml` `[project].version`；
-3. `src/telegram_exporter/__init__.py` `__version__`；
-4. `docs/releases/vX.Y.Z.md`；
-5. `HANDOFF.md` candidate/正式状态。
+```text
+VERSION
+pyproject.toml [project].version
+src/telegram_exporter/__init__.py __version__
+docs/releases/vX.Y.Z.md
+HANDOFF.md
+```
 
-VERSION、pyproject、package version 不应互相矛盾。
+不得让 VERSION / package / tag / Release notes 互相矛盾。
 
-## 4. 分支 / PR
+## 5. 分支 / PR
 
 标准流程：
 
@@ -53,68 +67,38 @@ latest main
 → feature/fix branch
 → tests
 → PR
-→ Windows CI
-→ all green
+→ Windows CI green
+→ required human E2E
+→ explicit release approval where required
 → merge
 ```
 
-用户可见二进制版本的合并提交建议使用：
+不得为发版直接堆未经 PR/CI 的功能代码到 main；不得 force-push main。
+
+当前仓库无 branch protection，所以这属于 Agent 必须自行执行的政策。
+
+## 6. Windows PR CI
+
+当前 Windows runtime 最低理念：
 
 ```text
-release: vX.Y.Z
-```
-
-这样 push 到 main 后自动触发 Release workflow。
-
-不得为了发版直接在 main 上堆未经 PR/CI 验证的功能代码。
-
-## 5. PR Windows CI（v0.1.9+）
-
-`.github/workflows/windows-build.yml` 至少完成：
-
-```text
-Install
-pytest -q
-GUI + tgctl import check
-Build TGExporter one-file EXE
-Build tgctl one-file console EXE
-Smoke-test TGExporter.exe
-Smoke-test tgctl.exe
-Upload temporary CI artifacts
-```
-
-两种 executable 都必须通过 packaged smoke-test 才能合并。
-
-## 6. 正式 Release workflow
-
-`.github/workflows/release.yml` 在：
-
-- push 到 `main` 且 head commit message 以 `release:` 开头；或
-- 手工 `workflow_dispatch`
-
-时执行。不要在 VERSION 未更新时随意 dispatch。
-
-v0.1.9+ 必须完成：
-
-```text
-Install
 pytest
-GUI + tgctl import check
-Build TGExporter one-file
-Build TGExporter portable onedir
-Build standalone tgctl.exe
-Copy tgctl.exe into portable TGExporter directory
-Smoke-test GUI one-file
-Smoke-test GUI portable
-Smoke-test standalone tgctl
-Smoke-test portable tgctl
-Prepare release assets + SHA256SUMS
-Create/update GitHub Release
+import checks
+PyInstaller one-file
+portable where release parity matters
+tgctl build
+native exit-code regressions
+packaged smoke
+artifact/hash
 ```
 
-## 7. 正式资产（v0.1.9+）
+v0.3 Candidate 的精确 gate 和当前 frozen artifact 在 `docs/TESTING.md` / `HANDOFF.md`。
 
-至少：
+## 7. Formal Release workflow
+
+`.github/workflows/release.yml` 在符合 workflow 条件的 `release:` main commit 或明确 `workflow_dispatch` 时运行。
+
+正式 Release 至少构建：
 
 ```text
 TGExporter-vX.Y.Z-windows-x64.exe
@@ -123,105 +107,108 @@ tgctl.exe
 SHA256SUMS.txt
 ```
 
-Portable ZIP 内应有：
+并 smoke-test one-file/portable GUI、standalone/portable tgctl。
 
-```text
-TGExporter/
-├─ TGExporter.exe
-└─ tgctl.exe
-```
-
-以及 PyInstaller onedir 依赖文件。
-
-`SHA256SUMS.txt` 至少记录 GUI one-file、portable zip、standalone tgctl.exe 的 SHA-256。
+v0.1.10+ 必须保留 packaged UTF-8 `SESSION_BUSY` JSON + native exit=8 regression，包括 standalone 与 portable tgctl。
 
 ## 8. Release notes
 
-Release workflow 从：
+Workflow 从：
 
 ```text
 docs/releases/<VERSION>.md
 ```
 
-读取正式 notes。notes 必须描述**当前真实行为**，不要复制旧版目录/能力说明导致 Release 页面和二进制不一致。
+读取 notes。Notes 描述当前实际 binary，不复制陈旧能力。
 
-涉及 tgctl 的版本应明确：
+涉及 tgctl/reader 时至少明确：
 
-- 新命令；
+- 新命令/语义；
 - read vs write；
-- dry-run / batch limit；
-- Session reuse / SESSION_BUSY；
-- 哪些真实 Telegram write E2E 尚待用户验证；
-- 明确不做 MCP/监听/媒体 write 等边界。
+- dry-run/caps；
+- Session/daemon model；
+- human E2E 已做/未做；
+- out-of-scope safety boundary。
 
-## 9. Release 后核验
+## 9. v0.3 hard release gate
 
-只有下面全部满足，才能对用户说“新版本已发布”：
-
-- tag 正确；
-- target commit 正确；
-- `draft=false`；
-- `prerelease=false`；
-- 所有正式 assets 存在；
-- SHA256 与 `SHA256SUMS.txt` 一致；
-- Release notes 与当前版本一致；
-- Release workflow conclusion=success。
-
-固定最新版入口：
+v0.3 不采用“CI green 就直接发布”。固定：
 
 ```text
-https://github.com/3ll3-3ll3/tg-exporter/releases/latest
+Automated Candidate gate green
+→ frozen hash-traceable Candidate
+→ user real Telegram E2E
+→ fix only actual failures + rerun affected checks
+→ human E2E PASS
+→ user explicitly authorizes release
+→ finalize Release Notes
+→ merge/release
 ```
 
-## 10. 发布后 HANDOFF
+在真人 E2E PASS + 用户明确授权前：
 
-Release 成功后必须更新 `HANDOFF.md`：
+- PR #20 保持 Draft；
+- 不 merge；
+- 不创建/覆盖 `v0.3.0` Release；
+- 不继续加入无关功能；
+- Candidate Artifact 不称为正式版。
 
-- 正式版本；
-- PR；
-- merge/release target commit；
-- Release workflow run id；
-- 正式资产名与 SHA-256；
-- main 是否只有文档类未发布提交；
-- 真人 Telegram E2E 已完成/仍待完成清单。
+ADR：[`006-human-e2e-release-gate.md`](decisions/006-human-e2e-release-gate.md)。
 
-发布后的纯 HANDOFF/docs commit 不需要再发二进制，但正常 Windows CI 仍应通过。
+## 10. GitHub Actions 与真实 Telegram
 
-## 11. tgctl 真人写操作
+Actions 不使用用户真实 Telegram credentials。
 
-GitHub Actions 不连接用户真实 Telegram。Release 可以在完整 mock/unit/packaged smoke-test 通过后发布，但必须明确：真正 `forward` / `send` 仍需用户在本机账号做 E2E。
+Telegram API/write tests 使用 mock/fake/local lock。真实账号 E2E 在用户本机做：
 
-真人验证原则：
+- read-first；
+- write 先 dry-run；
+- 用户明确确认后再真实写；
+- 优先 Saved Messages；
+- 不故意制造 FloodWait；
+- media download 只有用户明确选择才产生本地文件。
+
+## 11. 正式 Release 后核验
+
+只有全部满足才能说“已发布”：
 
 ```text
-关闭 GUI
-→ tgctl dry-run
-→ 用户确认
-→ Saved Messages 真正写入
+correct tag
+correct target commit
+draft=false
+prerelease=false
+all expected assets exist
+SHA256SUMS matches assets
+Release notes match behavior
+formal workflow success
 ```
 
-不要自行向陌生人/陌生群发消息，也不要故意制造 FloodWait。
+随后更新 `HANDOFF.md`：Production version/commit、PR、workflow、asset hashes、main 未发布状态、human E2E 状态。
 
-## 12. Hotfix 原则
+## 12. Rollback
 
-明确 bug → regression test → Windows CI → 影响实际使用则尽快 PATCH Release。不要把多个未经验证的大功能塞进紧急 hotfix。
+本项目没有生产数据库 rollback。回滚是使用上一正式 Release，同时保留 `%APPDATA%\TelegramMultiChatExporter\`。
 
-## 13. 品牌与兼容路径
+不得通过删除 Session/settings 进行回滚。未来若出现不可逆本地 schema migration，必须事先有 ADR、备份/兼容/rollback 说明。
 
-用户可见品牌：
+详见 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
 
-```text
-TG Exporter / TG 导出器
-TGExporter.exe
-tgctl.exe
-```
+## 13. Hotfix
 
-内部 Python package 继续 `telegram_exporter`。
+明确 bug → regression → Windows CI → 影响实际使用则 PATCH Release。
 
-历史本地目录继续：
+Hotfix 不混入未验证的大型架构重写。v0.1.10 就是这一原则的例子：只修 packaged UTF-8/exit-code contract，并把 regression forward-port 到下一代。
+
+## 14. Branding / compatibility path
+
+用户可见：`TG Exporter / TG 导出器`、`TGExporter.exe`、`tgctl.exe`。
+
+内部 Python package：`telegram_exporter`。
+
+兼容 AppData 永远保持：
 
 ```text
 %APPDATA%\TelegramMultiChatExporter\
 ```
 
-以确保 API settings、Telegram Session、导出设置和 checkpoint 可跨版本复用。
+Release/install/build 不得擅自迁移或清空该目录。
