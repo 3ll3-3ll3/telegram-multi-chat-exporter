@@ -50,6 +50,66 @@ jobs:
           pyinstaller --noconfirm --clean --console --onefile --name tgctl --paths src --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
           Copy-Item .\dist\tgctl\tgctl.exe .\dist\portable\TGExporter\tgctl.exe
 
+      - name: Verify packaged tgctl SESSION_BUSY JSON and exit code
+        shell: pwsh
+        run: |
+          $originalAppData = $env:APPDATA
+          $testAppData = Join-Path $env:RUNNER_TEMP "tgctl-release-session-busy-appdata"
+          $holder = $null
+          try {
+            Remove-Item -Recurse -Force $testAppData -ErrorAction SilentlyContinue
+            $env:APPDATA = $testAppData
+            $appDir = Join-Path $testAppData "TelegramMultiChatExporter"
+            New-Item -ItemType Directory -Force $appDir | Out-Null
+            '{"api_id":12345,"api_hash":"ci-dummy-not-secret"}' | Set-Content -Encoding utf8 -NoNewline (Join-Path $appDir "api_credentials.json")
+
+            $readyFile = Join-Path $env:RUNNER_TEMP "tgctl-release-session-lock-ready.txt"
+            Remove-Item -Force $readyFile -ErrorAction SilentlyContinue
+            $holder = Start-Process python -ArgumentList @("tests\helpers\hold_session_lock.py", $readyFile) -PassThru -WindowStyle Hidden
+            for ($i = 0; $i -lt 50 -and -not (Test-Path $readyFile); $i++) {
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not (Test-Path $readyFile)) {
+              throw "Session lock holder did not become ready"
+            }
+
+            function Assert-SessionBusyContract([string]$exePath) {
+              $psi = [System.Diagnostics.ProcessStartInfo]::new()
+              $psi.FileName = (Resolve-Path $exePath).Path
+              $psi.Arguments = "status --json"
+              $psi.UseShellExecute = $false
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+              $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+              $process = [System.Diagnostics.Process]::Start($psi)
+              $stdout = $process.StandardOutput.ReadToEnd().Trim()
+              $stderr = $process.StandardError.ReadToEnd().Trim()
+              $process.WaitForExit()
+              $exitCode = $process.ExitCode
+
+              if (-not $stdout) {
+                throw "Packaged tgctl produced no JSON stdout: $exePath; stderr=$stderr"
+              }
+              $payload = $stdout | ConvertFrom-Json
+              if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
+                throw "Expected SESSION_BUSY JSON from $exePath; got: $stdout"
+              }
+              if ($exitCode -ne 8) {
+                throw "Expected exit code 8 from $exePath; got $exitCode"
+              }
+            }
+
+            Assert-SessionBusyContract ".\dist\tgctl\tgctl.exe"
+            Assert-SessionBusyContract ".\dist\portable\TGExporter\tgctl.exe"
+          }
+          finally {
+            if ($holder -and -not $holder.HasExited) {
+              Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+            }
+            $env:APPDATA = $originalAppData
+          }
+
       - name: Smoke-test packaged builds
         shell: pwsh
         run: |
