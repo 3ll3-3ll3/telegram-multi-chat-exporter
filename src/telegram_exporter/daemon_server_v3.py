@@ -27,7 +27,10 @@ class DaemonServer(V2DaemonServer):
                 "chats.get",
                 "chats.members",
                 "messages.history",
+                "messages.advanced_search",
                 "messages.rich_get",
+                "topics.list",
+                "topics.history",
             ):
                 if capability not in capabilities:
                     capabilities.append(capability)
@@ -35,7 +38,8 @@ class DaemonServer(V2DaemonServer):
             result["reader_schema"] = "tgctl.reader.v1"
             return result
 
-        if method in READER_METHODS or (method == "messages.get" and params.get("schema") == "v3"):
+        is_v3_message = method in {"messages.get", "messages.search"} and params.get("schema") == "v3"
+        if method in READER_METHODS or is_v3_message:
             return await dispatch_reader(self, method, params)
 
         return await super().dispatch(request)
