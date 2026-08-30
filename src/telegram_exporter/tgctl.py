@@ -39,6 +39,32 @@ class TgctlArgumentParser(argparse.ArgumentParser):
         raise TelegramBridgeError(INVALID_ARGUMENT, message)
 
 
+def _configure_console_streams() -> None:
+    """Make the CLI contract UTF-8 even on legacy Windows code pages.
+
+    PyInstaller console builds inherit the process' stdout/stderr text encoding.
+    On machines/runners using a legacy code page (for example cp1252), emitting
+    Chinese JSON error messages can otherwise raise UnicodeEncodeError *while
+    handling the original error*. That secondary failure changes the native
+    process exit code to 1 and breaks the documented JSON/exit-code contract.
+
+    ``reconfigure`` is available on normal Python/PyInstaller TextIOWrapper
+    streams. Test harnesses and embedded callers may replace streams with
+    objects that do not provide it, so those are intentionally left untouched.
+    """
+
+    stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(stdout_reconfigure):
+        stdout_reconfigure(encoding="utf-8", errors="strict")
+
+    stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if callable(stderr_reconfigure):
+        # Human diagnostics should never crash error handling merely because a
+        # terminal cannot represent a character. UTF-8 handles normal Windows
+        # terminals/pipes; backslashreplace is a final defensive fallback.
+        stderr_reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="stdout 仅输出机器可读 JSON")
 
@@ -306,6 +332,7 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_console_streams()
     setup_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
     json_mode = "--json" in argv
