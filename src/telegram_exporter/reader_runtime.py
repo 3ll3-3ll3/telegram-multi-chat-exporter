@@ -191,12 +191,13 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             if sender_kind is None:
                 sender_kind = "user" if sender_id > 0 else None
 
-        # Broadcast channel posts commonly omit from_id. In that case peer_id is
-        # the actual posting channel, not a user. This was a major source of
-        # v0.3.0 sender_type=unknown.
-        if sender_id is None and raw_from is None and logical_row.dialog_type == "channel":
+        # Broadcast channel posts commonly omit from_id. Telethon may still
+        # expose a negative sender_id property, so the peer_id check must run
+        # even when sender_id is already populated. The raw peer establishes
+        # that the actual poster is the channel rather than an unknown user.
+        if raw_from is None and logical_row.dialog_type == "channel":
             peer_id = _safe_peer_id(getattr(message, "peer_id", None))
-            if peer_id == logical_row.chat_id:
+            if peer_id == logical_row.chat_id and (sender_id is None or sender_id == peer_id):
                 sender_id = peer_id
                 sender_kind = "channel"
 
