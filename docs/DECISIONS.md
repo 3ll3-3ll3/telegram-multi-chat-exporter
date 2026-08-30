@@ -135,3 +135,60 @@ Option B 顺序继续是：`JSON success → checkpoint → optional read ack`�
 read-only RPC 在 daemon/pipe 故障后最多自动恢复并重试一次；真实 send/forward 在请求已交给 daemon 后如果连接中断，客户端返回 `WRITE_OUTCOME_UNKNOWN`，必须先检查目标聊天，绝不自动 retry 造成重复消息。
 
 详细设计见 `docs/DAEMON_IPC_DESIGN.md`。
+
+## D-033：第三代版本号固定为 v0.3.0，继承 v0.2.0 daemon
+**Accepted（2026-08-30）**。
+
+用户新提示词中的“旧 v0.1.9 → 新 v0.2.0”属于另一套版本叙述。仓库内统一映射为：第一代 `v0.1.x`、第二代 `v0.2.0` single-daemon、第三代 `v0.3.0` Personal Account Reader。v0.3.0 从 v0.2.0 架构继续开发，不另起 direct-Session reader，不覆盖 v0.2.0。
+
+## D-034：全账号 dialogs 使用独立 reader model，不扩大 GUI GroupInfo
+**Accepted（v0.3.0）**。
+
+GUI `GroupInfo/chats.catalogue` 继续保持 group/channel 导出器语义。v0.3.0 新增 `DialogInfo` 等 reader-only 模型覆盖 private/bot/Saved Messages/archive/forum，避免为了 Codex reader 机械重写已验证 GUI。
+
+## D-035：reader 全部 bounded pagination；cursor 签名且永不携带 access_hash
+**Accepted（v0.3.0）**。
+
+默认 page 100、最大 500。cursor 使用安全 offset + query fingerprint + HMAC integrity，复用本地持久化 IPC identity secret；不得把 `access_hash`、`file_reference` 或其它 Telegram credential 放入 cursor。全历史不提供无提示无限读取。
+
+## D-036：dialogs 默认 canonical stable order，messages history 用 message-id cursor
+**Accepted（v0.3.0）**。
+
+完整会话目录为避免新消息导致 activity order 重排，默认按 `(dialog_type_rank, marked_chat_id)` 做稳定分页；仍返回 last activity 字段。消息 history 默认 newest→older，以 `before_message_id` 继续。迁移群使用 current→legacy composite segment cursor，并以 `(source_chat_id,message_id)` 作为唯一定位键。
+
+## D-037：sender-role 是查询时当前角色，不伪造历史角色
+**Accepted（v0.3.0）**。
+
+owner/admin/member filter 默认基于查询时 Telegram 当前 participant/admin snapshot。Telegram 不提供完整历史管理员任期，因此不得声称某人过去发送某条消息时一定具有/不具有管理员身份。role 不可见时返回 unknown/unavailable，unknown 不得当作 member。
+
+## D-038：匿名管理员/send-as 必须结构化，但绝不反推个人
+**Accepted（v0.3.0）**。
+
+Message sender 统一结构化为 user/chat/channel/anonymous_admin/unknown。以 chat/channel 身份发言时返回 `posted_as_chat_id`；只有 metadata 能证明时才标 anonymous_admin。不得依据显示名、`post_author` 字符串或管理员列表猜 behind-the-scenes user id。
+
+## D-039：消息 rich metadata 可读，媒体默认 metadata-only
+**Accepted（v0.3.0）**。
+
+history/search/get/topic history 统一输出 reply/forward/entities/reactions/poll/service/media metadata 等安全字段；默认不下载 media、不输出 file_reference。显式 `media download` 是本地磁盘副作用，必须先 plan 数量/预计大小并返回 confirmation token，第二次确认后才下载，且有普通/large/hard cap。
+
+## D-040：v0.3 GUI 与 tgctl 不再互相 SESSION_BUSY
+**Accepted（v0.3.0）**。
+
+v0.3 继承 single-daemon，因此同代 GUI 与 tgctl 同时使用是正常场景，不能为了兼容旧提示词恢复 direct Session competition。`SESSION_BUSY` 只表示 daemon 无法取得 `SessionLease`（例如旧 v0.1.x direct binary 正占用）；packaged native exit code 必须保持 8。v0.1.10 的 UTF-8 console fix 和 packaged regression 必须 forward-port。
+
+## D-041：Telegram 无法可靠枚举已删除消息时不得伪造 deleted=true
+**Accepted（v0.3.0）**。
+
+正常返回消息 `availability=available`。按 ID 查不到继续 `MESSAGE_NOT_FOUND/not_found_or_unavailable`；不能把“当前 API 查不到”武断解释为“已删除”。Secret Chat、已删除内容、无权内容不在 reader 能力范围。
+
+## D-042：URL 域名过滤必须解析 hostname，不做字符串 contains
+**Accepted（v0.3.0）**。
+
+`--url-domain example.com` 使用 Telegram URL entities + 安全文本 URL parser，规范化 hostname 后匹配 exact host 或真实 subdomain；`example.com.evil.test` 不得匹配。不 follow redirect、不访问目标网页。
+
+## D-043：v0.3.0 完成代码/测试/候选打包后停止，不自动发布 Release
+**Accepted（用户明确要求）**。
+
+v0.3.0 实施完成后报告 branch/head、测试、真实只读 E2E、candidate EXE/hash 和限制，然后等待用户验收。不得覆盖 v0.1.x Release，也不得未经新授权创建 v0.3.0 正式 Release。
+
+完整第三代设计见 `docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`。
