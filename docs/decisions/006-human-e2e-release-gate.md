@@ -1,31 +1,44 @@
-# ADR-006 — Human Windows / Telegram E2E Is a Release Gate
+# ADR-006 — Human Windows / Telegram E2E Is the Default Release Gate
 
 ## Status
-Accepted。v0.3.0 已实际履行并发布；v0.3.1 runtime patch 继续复用。
+Accepted, with an explicit one-release exception recorded for v0.3.1 on 2026-08-30.
 
 ## Context
-GitHub Actions 能验证 unit/mock、Windows packaging、OS Session lock、native exit code 和 smoke，但不能安全使用用户真实 Telegram credential/session，也不能访问用户真实 `%APPDATA%` 日志/状态。
+GitHub Actions can validate unit/mock behavior, Windows packaging, OS Session lock, native exit codes and packaged smoke, but cannot safely use the user's real Telegram credentials/session or inspect the user's real `%APPDATA%` runtime state.
 
-## Decision
-高影响 Telegram/runtime release 使用两阶段 gate：
+## Default decision
+High-impact Telegram/runtime releases normally use:
 
 ```text
 Automated Candidate green
 → frozen/hash-traceable Windows Candidate
-→ required local Windows / real-account acceptance
-→ fix actual failures + regression + revalidate affected cases
+→ local Windows / real-account acceptance
 → user explicit merge/release authorization
 → merge + formal Release workflow
 ```
 
-v0.3.0 已按此流程完成并成为 Production。v0.3.1 PR #24 在本地 human PASS + 用户明确授权之前保持 Draft，不 merge，不发布；Actions Artifact 不是 Production。
+CI never receives real Telegram credentials. Human checks must not be reported as PASS unless actually performed.
 
-CI 永不放真实 Telegram credentials。
+## v0.3.1 exception
+On 2026-08-30, after the final automated Candidate was fully green, the user explicitly authorized publishing v0.3.1 immediately and explicitly waived waiting for the remaining real Windows / Telegram human E2E.
+
+Therefore for **v0.3.1 only**:
+
+```text
+Automated Candidate green
+→ user explicitly accepts residual real-environment risk and waives remaining human E2E
+→ final authorization-only docs/workflow CI green
+→ merge + formal Release workflow
+```
+
+The waived checks remain recorded as **not performed / unverified**, never as PASS.
+
+This exception does not authorize Telegram writes and does not change the default rule for future releases. A future release requires human E2E again unless the user explicitly grants another release-specific waiver.
 
 ## Alternatives rejected
-- CI green 立即 release：不能证明真实 Telegram account semantics；
-- GitHub Actions 使用真实 Telegram credentials：秘密/账号风险不可接受；
-- human acceptance 期间继续无关 feature churn：会让 frozen candidate 失去意义。
+- silently pretending human E2E passed: false project history;
+- putting real Telegram credentials in GitHub Actions: unacceptable secret/account risk;
+- treating a Candidate artifact as a formal Release: breaks traceability.
 
 ## Consequences
-真实账号/Windows 项必须明确标注“人工 pending”，不得伪造成 CI PASS。Runtime 修改后需重新跑 CI，并至少复验受影响真人场景。
+Release documentation must distinguish automated PASS from human E2E waived/unverified. Formal binaries are rebuilt from merged main and the Release workflow must not overwrite an existing tag or Release.
