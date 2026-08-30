@@ -68,7 +68,7 @@ def _configure_paths(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_capture_snapshot_refreshes_bounds_without_mutating_catalogue(monkeypatch):
+def test_capture_snapshot_refreshes_current_logical_group_without_mutating_catalogue(monkeypatch):
     stale = GroupInfo(
         chat_id=-100123,
         title="Example",
@@ -77,7 +77,15 @@ def test_capture_snapshot_refreshes_bounds_without_mutating_catalogue(monkeypatc
         latest_message_id=11,
         migrated_from_chat_id=-456,
     )
-    client = FakeDialogClient([_dialog(-100123, unread=5, lower=20, upper=25)])
+    # The legacy Basic Group appears first and deliberately has very different
+    # read state. Current-unread must ignore it and freeze only the active
+    # logical Supergroup identified by group.chat_id.
+    client = FakeDialogClient(
+        [
+            _dialog(-456, unread=99, lower=1, upper=99),
+            _dialog(-100123, unread=5, lower=20, upper=25),
+        ]
+    )
     monkeypatch.setattr("telegram_exporter.unread_snapshot.get_peer_id", lambda entity: entity.peer_id)
 
     snapshot = asyncio.run(capture_current_unread_snapshot(client, stale))
