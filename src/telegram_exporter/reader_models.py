@@ -83,6 +83,7 @@ class SenderInfo:
     anonymous_admin: bool
     via_bot_id: int | None
     role_basis: str
+    unknown_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
