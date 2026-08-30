@@ -83,14 +83,17 @@ v0.3.1 sender 识别优先使用 Telegram 原始 sender peer 字段；broadcast 
 
 ```powershell
 tgctl messages search --chat <ref> --contains "pikpak" --limit 500 --json
+tgctl messages search --chat <ref> --regex "release-\d+" --json
 tgctl messages search --chat <ref> --sender-role admin --contains "pikpak" --json
 tgctl messages search --chat <ref> --url-domain mypikpak.com --json
 tgctl messages search --contains "预推免" --limit 100 --jsonl
 ```
 
-支持单会话与全局、sender-id、当前 sender-role、时间范围、message type、forum topic、是否含链接、真实 URL hostname、cursor/limit。`--url-domain mypikpak.com` 会解析 hostname，`mypikpak.com.evil.com` 不会被误判为目标域名。
+支持单会话与全局、contains、regex、sender-id、当前 sender-role、时间范围、message type、forum topic、是否含链接、真实 URL hostname、cursor/limit。
 
-v0.3.1 的域名规范化完全离线，不依赖公共后缀服务或网络；非法域名返回结构化 `INVALID_ARGUMENT`。CI 会直接运行最终 PyInstaller standalone/portable `tgctl.exe` 的 url-domain smoke，避免只在源码环境通过。
+v0.3.1 的 `--regex` 是本地 bounded filter：默认忽略大小写，`--case-sensitive` 可切换；空、非法或超过 512 字符的 pattern 在 Telegram 请求前返回结构化 `INVALID_ARGUMENT`。regex 与大小写语义绑定 cursor；跨 regex 查询复用 cursor 返回 `INVALID_CURSOR`。
+
+`--url-domain mypikpak.com` 会解析 hostname，`mypikpak.com.evil.com` 不会被误判为目标域名。域名规范化完全离线，不依赖公共后缀服务或网络；非法域名返回结构化 `INVALID_ARGUMENT`。CI 会直接运行最终 PyInstaller standalone/portable `tgctl.exe` 的 domain+regex search-filter smoke，避免只在源码环境通过。
 
 ### Forum Topic
 
