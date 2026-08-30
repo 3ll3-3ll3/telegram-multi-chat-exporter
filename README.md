@@ -2,7 +2,7 @@
 
 **TG 导出器**：Windows Telegram GUI 导出器 + 本地 `tgctl` 机器接口。
 
-> 正式 Release 当前仍为 v0.1.10。`codex/personal-account-reader-v0.3.0` 是第三代 **v0.3.0 candidate** 开发线，完成验收前不发布 Release。
+> 当前正式 Release：**v0.3.0**。正式 Release target 为 `8e230e33ea928bcf71296e4e5379b097446dbec5`，下载与校验值以 GitHub Release / `SHA256SUMS.txt` 为准。
 
 历史本地目录继续固定为：
 
@@ -38,7 +38,7 @@ GUI 继续保持已验证的多群独立导出体验：
 
 ## v0.3.0 Personal Account Reader
 
-第三代目标是让本地 Codex 不依赖 GUI 导出文件，也能通过 `tgctl` 安全、分页地读取当前个人 Telegram 账号有权访问的信息。
+第三代让本地 Codex 不依赖 GUI 导出文件，也能通过 `tgctl` 安全、分页地读取当前个人 Telegram 账号有权访问的信息。
 
 ### 账号与完整会话目录
 
@@ -171,7 +171,7 @@ tgctl┘
 
 Secret Chat、已删除内容恢复、无权访问内容、自动转发规则、24/7 listener、群管理/删消息/退群等不属于 v0.3 reader 范围。
 
-完整边界见 [`SECURITY.md`](SECURITY.md)。
+完整边界见 [`SECURITY.md`](SECURITY.md) 与 [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md)。
 
 ## 开发与交接
 
@@ -179,12 +179,13 @@ Agent/Codex 修改前依次阅读：
 
 1. [`AGENTS.md`](AGENTS.md)
 2. [`HANDOFF.md`](HANDOFF.md)
-3. [`docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`](docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md)
+3. [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-5. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+5. [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md)
 6. [`docs/TESTING.md`](docs/TESTING.md)
-7. [`SECURITY.md`](SECURITY.md)
-8. [`docs/CODEX_TGCTL.md`](docs/CODEX_TGCTL.md)
+7. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+8. [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md)
+9. 与当前任务有关的 [`docs/decisions/`](docs/decisions/)
 
 开发运行：
 
@@ -199,7 +200,13 @@ python -m telegram_exporter.tgctl dialogs list --limit 20 --json
 
 ## Release
 
-正式 Release 仍从 GitHub Releases 分发。**当前 v0.3.0 分支只产出 candidate，未经用户真实账号验收与明确发布授权，不创建或覆盖 v0.3.0 Release。**
+正式 Release 只从 GitHub Releases 分发。当前正式版本为 **v0.3.0**：
+
+- Release: https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.3.0
+- target commit: `8e230e33ea928bcf71296e4e5379b097446dbec5`
+- 正式资产包含 one-file EXE、portable ZIP、`tgctl.exe`、`SHA256SUMS.txt`。
+
+不要把 Actions Candidate Artifact 当作正式发行包，也不要覆盖/删除历史 tag 或 Release。
 
 ## License
 
