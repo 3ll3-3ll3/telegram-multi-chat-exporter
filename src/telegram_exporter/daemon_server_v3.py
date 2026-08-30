@@ -31,6 +31,7 @@ class DaemonServer(V2DaemonServer):
                 "messages.rich_get",
                 "topics.list",
                 "topics.history",
+                "media.download.confirmed",
             ):
                 if capability not in capabilities:
                     capabilities.append(capability)
