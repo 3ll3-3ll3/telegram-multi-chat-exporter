@@ -8,57 +8,55 @@
 
 当前正式 Release：**TG Exporter v0.1.10**。
 
-- merge commit：`cedb02035597aa607fac399666154519f480c431`
-- Release workflow：`33287327783` success
-- v0.1.10 修复 packaged `tgctl` 在部分 Windows 非 UTF-8 控制台输出中文 JSON 时可能 `UnicodeEncodeError`，导致 `SESSION_BUSY` native exit 1 而不是 8。
-- v0.1.9 真人 E2E 已确认核心 read/export/真实 Saved Messages send/forward 和主要安全边界可用。
+- main / Release target：`cedb02035597aa607fac399666154519f480c431`
+- v0.1.10 修复 Windows packaged `tgctl` 在非 UTF-8 console/redirect 环境中输出中文 JSON 时可能触发 `UnicodeEncodeError`，导致 `SESSION_BUSY` native exit 1 而不是 8。
+- v0.1.9 真人 E2E 已确认 GUI 导出、Session 复用、reader 基础命令、真实 Saved Messages send/forward 与主要安全边界可用。
 
-正式 Release 不受当前 v0.3 分支影响。
+正式 v0.1.10 不受第三代 candidate 分支影响。
 
-## 2. 代际与保留分支
+## 2. 三代关系
 
 ```text
 第一代 v0.1.x = GUI exporter + direct-session tgctl
-第二代 v0.2.0 = single daemon + local IPC
+第二代 v0.2.0 = single daemon + Windows Named Pipe IPC
 第三代 v0.3.0 = v0.2 daemon + Personal Account Reader
 ```
 
-第二代必须保留：
+第二代保留分支：
 
 ```text
 codex/single-daemon-v0.2.0
 base/head at v0.3 fork time = 165b0a86c85049cb25ab51f601c210ef986556a2
 ```
 
-第三代设计 PR：`#19 docs: design v0.3.0 personal account reader`，base 是 v0.2.0 分支。
-
-第三代实现分支：
+第三代：
 
 ```text
-codex/personal-account-reader-v0.3.0
-VERSION = v0.3.0
+branch: codex/personal-account-reader-v0.3.0
+PR: #20 feat: v0.3.0 personal account reader candidate
+VERSION: v0.3.0
 ```
 
-当前是 **candidate 开发线，不是正式 Release**。
+PR #20 当前故意以 `codex/single-daemon-v0.2.0` 为 base，用于第三代 candidate 验证；它不是正式发布 PR，仍保持 Draft，不得在真人验收前 merge / Release。
 
-## 3. 第二代体验已继承
+## 3. v0.3 已继承的 daemon 体验
 
-v0.3 继续保持用户确认的 1B/2A/3B/4B/5B/6B/7A/8B：
+v0.3 继续保持第二代已确定的桌面行为：
 
-- 关闭 GUI 时活跃 export job 后台继续；
+- daemon 是唯一 TelegramClient / Session owner；
+- GUI 和 tgctl 都走本地 authenticated Named Pipe，不再各自 direct-open SQLiteSession；
+- GUI 关闭/崩溃时活跃 export job 可继续；
 - tgctl/Codex 可按需自动唤醒 daemon；
-- export 活跃时 Telegram read 等待；
-- export 活跃时真实 send/forward `EXPORT_IN_PROGRESS`，不偷偷排队发送；
-- GUI 崩溃后 daemon/job 继续，重开可恢复状态；
+- export 活跃时 Telegram reader 等待；
+- export 活跃时真实 send/forward 立即 `EXPORT_IN_PROGRESS`，不得排队后偷偷发送；
 - daemon 有 Windows tray；
-- phone/OTP/2FA 仅 GUI；
-- 空闲约 10 分钟 daemon 退出。
+- phone/OTP/2FA 只在 GUI；
+- 空闲约 10 分钟 daemon 退出；
+- v0.3 GUI + v0.3 tgctl 正常共存时不应 `SESSION_BUSY`；只有 legacy/direct Session holder 才触发 `SESSION_BUSY`。
 
-v0.3 GUI 与 v0.3 tgctl 都走 daemon，所以正常并行存在时**不应 `SESSION_BUSY`**。只有 legacy/direct process OS-lock 同一 Session 时才返回 `SESSION_BUSY`；packaged native exit 必须严格为 8。
+Packaged `SESSION_BUSY` native exit code 契约保持为 **8**。
 
-## 4. v0.3 已实现 reader 能力
-
-当前实现已包括：
+## 4. v0.3 已实现 Reader 命令
 
 ```text
 tgctl account get
@@ -69,16 +67,18 @@ tgctl chats get
 tgctl chats members
 
 tgctl messages history
-tgctl messages search   # v3 advanced/global/paged
-tgctl messages get      # v3 rich schema；--legacy-schema 兼容旧结果
+tgctl messages search
+tgctl messages get
 
 tgctl topics list
 tgctl topics history
 
-tgctl media download    # plan -> confirmation token -> explicit download
+tgctl media download
 ```
 
-Reader 独立模型：
+旧命令 `status/chats list/messages search/messages get/forward/send` 继续兼容；rich search/get 有 legacy schema 过渡。
+
+Reader 使用独立模型，不把 private/bot/Saved Messages 强塞进 GUI `GroupInfo`：
 
 ```text
 AccountProfile
@@ -92,28 +92,26 @@ MediaMetadata
 Page
 ```
 
-GUI `GroupInfo` 没有被 private/bot/Saved Messages 污染。
+## 5. Dialogs / pagination / migration
 
-## 5. dialogs / pagination
+- dialogs 覆盖 group/supergroup/channel/private/bot/Saved Messages/archive/forum/unread/pinned/muted/folder/migration safe metadata；
+- Saved Messages 唯一 self row：`reference=me`；
+- default page 100，max 500；
+- cursor = base64url + HMAC-SHA256 + method/query fingerprint；不得含 access_hash/file_reference/credential；
+- dialogs 使用 canonical stable ordering；
+- history newest → older；
+- Basic Group→Supergroup logical history = current → legacy composite cursor；
+- migration 消息唯一键必须是 `(source_chat_id,message_id)`。
 
-- dialogs 覆盖 group/supergroup/channel/private/bot/Saved Messages/archive/forum/unread/pinned/muted/folder/migration safe metadata。
-- Saved Messages 使用唯一 self row `reference=me`。
-- 默认 page 100，max 500。
-- Cursor：base64url + HMAC-SHA256 + method/query fingerprint；不含 `access_hash` / `file_reference`。
-- dialogs completeness 使用 canonical stable ordering，避免活跃度变化造成重复/遗漏。
-- invalid/tamper/query mismatch → `INVALID_CURSOR`；无法恢复 Telegram offset entity → `CURSOR_STALE`。
+## 6. Members / sender / Rich MessageInfoV3
 
-## 6. members / roles / sender
+- owner/admin/member 来自 Telegram participant/admin data；
+- role 是查询时 current snapshot，不伪造历史管理员任期；
+- unknown role 不强制写成 member；
+- anonymous admin / send-as 不从显示名、`post_author` 或管理员列表反推隐藏个人；
+- migration legacy history 的 role snapshot 仍基于当前逻辑群。
 
-- owner/admin/member 来自 Telegram participant/admin data。
-- role 是查询时 current snapshot，不伪造历史管理员任期。
-- role 不可见时 unknown/unavailable，不把 unknown 强制当 member。
-- anonymous admin / send-as 不从显示名或 `post_author` 反推个人。
-- migration legacy history 的 role snapshot 固定回当前逻辑群，不拿 legacy Basic Group 错当当前 Supergroup。
-
-## 7. MessageInfoV3
-
-history/search/get/topic history 统一趋向：
+Rich schema 覆盖：
 
 ```text
 chat_id / source_chat_id / message_id
@@ -134,110 +132,177 @@ media metadata
 availability
 ```
 
-查不到消息继续 `MESSAGE_NOT_FOUND/not_found_or_unavailable`，不武断声称已删除。
+查不到消息保持 `MESSAGE_NOT_FOUND / not_found_or_unavailable`，不得武断声称“已删除”。
 
-Migration logical history：current → legacy，唯一定位键 `(source_chat_id, message_id)`。
+## 7. Advanced search / Forum
 
-## 8. advanced search
-
-支持：single chat / global、contains、sender-id、sender-role、since/until、message type、topic、has-link、URL domain、cursor、limit、JSON/JSONL。
+Search 支持：single/global、contains、sender-id、sender-role、since/until、message-type、topic、has-link、URL domain、cursor、limit、JSON/JSONL。
 
 - bounded candidate scan，不为凑满结果无限扫描整个账号；
-- `--url-domain` 解析 hostname；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`；
-- 不主动访问 URL、不 follow redirect。
+- `--url-domain` 使用真实 hostname parsing；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`；
+- 不访问 URL、不 follow redirect。
 
-## 9. Forum
+Forum 使用 Telethon 1.44：
 
-使用 Telethon 1.44 的 `functions.messages.GetForumTopicsRequest(peer=...)`；不是旧/错误的 channels namespace。
+```text
+functions.messages.GetForumTopicsRequest(peer=...)
+```
 
-- `topics list` bounded pagination；
-- `topics history` 复用 MessageInfoV3 history；
-- 非 Forum → `NOT_A_FORUM`。
+非 Forum 返回 `NOT_A_FORUM`。
 
-## 10. media
+## 8. Media
 
-消息读取默认 metadata-only，不下载。
+普通 history/search/get 默认 **metadata-only**，不下载。
 
 显式 `media download`：
 
-1. 用户必须给 `--output`；
-2. 第一次只读取所选消息 metadata，返回 `DOWNLOAD_CONFIRMATION_REQUIRED`、file_count、known estimated bytes、unknown size count、confirmation token；**不创建输出目录、不下载**；
+1. 用户必须给 output；
+2. 第一次只 plan，返回 `DOWNLOAD_CONFIRMATION_REQUIRED` + file_count/estimated_bytes/unknown_size_count/token；不创建 output dir、不下载；
 3. token 绑定 chat/ids/output/allow-large + plan digest，短时有效；
-4. 第二次 `--confirm <token>` 才下载；
-5. 普通限制 20 files / 500 MiB；`--allow-large-download` 后最大 200 files / 5 GiB；
-6. 实际未知大小文件下载时继续按实际累计 bytes hard cap；
-7. `.part` → 成功后 `os.replace`，失败/取消清理当前 `.part`；
-8. 文件名做 Windows/path traversal 安全化，不允许 media filename 逃出 output dir。
+4. 第二次 `--confirm` 才下载；
+5. normal 20 files / 500 MiB；explicit large 最大 200 files / 5 GiB；
+6. 未知大小下载继续按实际累计 bytes 执行 hard cap；
+7. `.part` → 成功后 `os.replace`；失败/取消清理当前 `.part`；
+8. 文件名做 Windows/path traversal 安全化。
 
-Ctrl+C CLI exit 130；已确认的 daemon-side bounded download 可安全 detach，最终文件不会以半写 `.part` 冒充成功文件。
+Ctrl+C CLI exit 130；已确认的 daemon-side bounded download 可安全 detach，半写 `.part` 不得冒充成功文件。
 
-## 11. JSON/JSONL / exit codes
+## 9. JSON / JSONL / exit codes
 
-JSON envelope 保持：
+JSON envelope：
 
 ```json
 {"ok":true,"data":{}}
 {"ok":false,"error":{"code":"...","message":"...","details":{}}}
 ```
 
-Reader JSONL：meta → item* → end；错误单行 error。
+Reader JSONL：meta → item* → end；错误为单行 error。
 
-新增 exit code：
+关键 exit code：
 
 ```text
+SESSION_BUSY = 8
+EXPORT_IN_PROGRESS = 9
+WRITE_OUTCOME_UNKNOWN = 10
+DAEMON_UNAVAILABLE = 11
 INVALID_CURSOR / CURSOR_STALE = 12
 ACCESS_DENIED / MEMBERS_UNAVAILABLE = 13
 NOT_A_FORUM = 14
 DOWNLOAD_CONFIRMATION_REQUIRED = 15
 DOWNLOAD_LIMIT_EXCEEDED = 16
+Ctrl+C = 130
 ```
 
-历史 `SESSION_BUSY = 8` 不变。
+## 10. 安全边界
 
-## 12. 安全边界
+Reader 默认 Telegram read-only：不发送、不转发、不删除、不退群、不改 Chat Folder、不标已读、不自动下载媒体。
 
-reader 默认 Telegram read-only：不发送、不转发、不删除、不退群、不改 Chat Folder、不标已读、不自动下载媒体。
+既有 send/forward/GUI optional read-ack 仍保留但不扩权：
 
-现有 send/forward/GUI optional read-ack 仍保留但不扩权。
+- true forward；
+- plain-text send / `parse_mode=None`；
+- dry-run；
+- forward 默认 20、显式 large 最大 200；
+- AMBIGUOUS_CHAT 不 first-match；
+- FloodWait 返回等待秒数，不 retry storm；
+- write 已发送但响应前 transport 中断 → `WRITE_OUTCOME_UNKNOWN`，不自动 retry；
+- export 活跃时 real write → `EXPORT_IN_PROGRESS`。
 
-禁止 stdout/log/cursor 暴露：api_id/api_hash、phone、OTP/2FA、Session、credentials 原文、access_hash、file_reference、IPC secret。
+严禁普通 log/stdout/cursor 非授权泄露：api_id/api_hash、phone、OTP/2FA、Session/credentials、access_hash、file_reference、IPC secret。消息正文仅在用户明确 reader stdout JSON/JSONL 中允许；普通 app.log 不记录正文/caption/URL text/media filename。
 
-消息正文只在用户明确 reader stdout JSON/JSONL 中出现；普通 app.log 不记录正文/caption/URL 文本/媒体文件名。
+## 11. Candidate 自动化状态
 
-## 13. 测试状态
+PR #20 在 runtime candidate head `dede883b6eb0306fe44ed7751f5bebd9d1cf3e21` 上的 Windows PR CI：
 
-已完成并曾全绿的基础 v0.3 Windows CI head 包含：
+```text
+run 33291856851 = success
+pytest = 85 passed
+GUI + reader import = success
+TGExporter PyInstaller = success
+tgctl PyInstaller = success
+real OS Session lock -> packaged SESSION_BUSY + native exit 8 = success
+TGExporter/tgctl packaged smoke = success
+artifact upload = success
+```
 
-- pytest；
-- GUI + tgctl/reader import；
-- TGExporter PyInstaller；
-- tgctl PyInstaller；
-- packaged smoke。
+该 run 生成的 candidate：
 
-后续已继续加入：advanced search、Forum、media、v0.1.10 packaged `SESSION_BUSY exit=8` regression。最新 head 必须重新完整跑绿后才能称 candidate ready。
+```text
+artifact id: 9726241546
+artifact name: TGExporter-v0.3.0-candidate-windows-x64
+artifact zip digest: 970b403037a6fe95fee7e46e106e83e6501243fa132b32a9434acc7932735091
+TGExporter.exe: cea25ce0022fb517933e24029d7fc167050b7260a60ec3c653c1ccdd54a32ffd
+tgctl.exe: 6e46597689a24281089cfba827b0755414b00698c5b9471d3566374b5286e25a
+```
 
-已新增测试覆盖：cursor query binding/tamper、all dialog types、Saved Messages、bounded pagination、rich history/media metadata、JSONL、URL lookalike domain、search continuation、Forum Telethon API contract、media plan/confirm/limits/atomic file。
+**注意：上述 artifact 对应 runtime head `dede...`。** 2026-08-30 真人 E2E 前尾部审查又补了 Release workflow / handoff 等非业务收尾；新的 branch head 必须再次 Windows CI 全绿后，优先使用新 artifact 做真人验收。
 
-Mock/CI **不能替代**真实账号只读 E2E。
+## 12. 2026-08-30 尾部审查结论与已修项
 
-## 14. 仍待完成的 Phase G
+真人验收前复核发现并处理：
 
-在宣布 candidate ready 前必须：
+1. v0.3 branch 的正式 `.github/workflows/release.yml` 曾遗漏 v0.1.10 已有的 **standalone + portable packaged `SESSION_BUSY` JSON/native exit 8 gate**；已 forward-port；
+2. 正式 Release import check 已扩大到 daemon + reader + tgctl，而不是只检查旧 GUI/CLI import；
+3. 本 HANDOFF 原先把“更新 docs / 创建 implementation PR / PR CI / candidate artifact”等已完成事项仍列为 pending；已纠正。
 
-1. 最新 head Windows CI 全绿，包括 packaged SESSION_BUSY native exit 8；
-2. 更新 README/AGENTS/HANDOFF/CODEX_TGCTL/ARCHITECTURE/SECURITY/TESTING/release notes；
-3. 创建以 v0.2.0 为 base 的 v0.3 implementation PR；
-4. PR CI 全绿；
-5. 生成 candidate EXEs artifact 并记录 SHA-256；
-6. 真实账号只读 E2E：dialogs types、Svip 500 history、owner/admin、pikpak/mypikpak sender、structured sender、anonymous admin、pagination、since/until、Saved Messages、MESSAGE_NOT_FOUND、AMBIGUOUS_CHAT、GUI+tgctl coexist、legacy lock→SESSION_BUSY 8、FloodWait（自然/mock）、logs、Forum if available、metadata-only no download。
+仍故意保持：
 
-本环境不能替代用户真实 Telegram 账号；如果无法在 GitHub Actions 做真人 E2E，必须明确标记待用户本机执行。
+- PR #20 Draft；
+- 不 merge；
+- 不创建/覆盖 v0.3.0 Release；
+- `docs/releases/v0.3.0.md` 仍写 Candidate/未发布，正式发布授权后再改为最终 Release Notes。
 
-## 15. 发布闸门
+## 13. 真人 E2E 现在真正剩余的项目
 
-完成代码、自动测试、Windows candidate 与可完成的只读 E2E 准备后**停止**：
+CI/mock 不能替代以下用户本机只读验收：
 
-- 不 merge release commit；
-- 不创建/覆盖 `v0.3.0` GitHub Release；
-- 不改 v0.1.10 tag/assets；
-- 等用户本地验收和明确“发布 v0.3.0”授权。
+1. all dialogs：group/supergroup/channel/private/bot/Saved/archive；
+2. Telegram Chat Folder membership；
+3. 真实聊天最近 500 history；
+4. owner/admin；
+5. sender / sender-role / pikpak + real mypikpak.com domain；
+6. anonymous admin/send-as 不误归属；
+7. history 多页无 overlap/gap；
+8. since/until；
+9. Saved Messages history/search；
+10. MESSAGE_NOT_FOUND；
+11. AMBIGUOUS_CHAT；
+12. v0.3 GUI + tgctl coexist；
+13. legacy direct Session lock → packaged SESSION_BUSY + native exit 8；
+14. legacy lock 下 GUI safe diagnostic，无 `database is locked`；
+15. FloodWait 仅自然出现时观察，不故意制造；
+16. logs/stdout safety；
+17. Forum（若账号有条件）；
+18. media metadata-only 不产生文件；
+19. media plan 第一次不创建目录/不下载；
+20. media confirm 真下载仅在用户明确选择时测试。
+
+默认真人 E2E 不执行 send/forward/mark-read，也不需要真实媒体下载。
+
+## 14. 真人验收通过后的正式集成路径
+
+这是一个重要发布纪律：**不要把 PR #20 直接 merge 到它当前的 v0.2 base 后就声称 v0.3 已进入 main。**
+
+PR #20 当前 base 是 `codex/single-daemon-v0.2.0`，而正式线是 `main @ v0.1.10`。真人 E2E 通过后必须先完成最终正式线集成：
+
+```text
+用户 E2E PASS
+→ 把 v0.2 + v0.3 完整实现集成/retarget 到最新 main（必须保留 v0.1.10 ancestry/行为）
+→ 解决任何 integration conflict
+→ 再跑完整 Windows PR CI / packaged gates
+→ 确认集成没有改变已验收 runtime 语义
+→ 将 docs/releases/v0.3.0.md 从 Candidate Notes 收尾为正式 Release Notes
+→ 用户明确授权“发布 v0.3.0”
+→ release: v0.3.0 进入 main
+→ formal Release workflow
+→ 验证 one-file / portable / tgctl / SHA256 / Release target
+→ 更新 HANDOFF 为正式版状态
+```
+
+若最终集成产生业务代码变化，必须针对受影响功能补做 E2E；不能拿集成前的真人结果替代集成后代码。
+
+## 15. 当前唯一合理下一步
+
+等待当前尾部收尾 head 的 Windows CI 全绿并生成新的 candidate artifact，然后交给用户做 **真实 Telegram 账号只读 E2E**。
+
+在此之前不要继续堆新功能，不要 merge，不要 Release。
