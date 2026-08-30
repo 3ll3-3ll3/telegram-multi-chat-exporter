@@ -8,13 +8,13 @@
 
 当前正式 Release：**TG Exporter v0.1.10**。
 
-- main / Release target：`cedb02035597aa607fac399666154519f480c431`
+- `main` / Release target：`cedb02035597aa607fac399666154519f480c431`
 - v0.1.10 修复 Windows packaged `tgctl` 在非 UTF-8 console/redirect 环境中输出中文 JSON 时可能触发 `UnicodeEncodeError`，导致 `SESSION_BUSY` native exit 1 而不是 8。
-- v0.1.9 真人 E2E 已确认 GUI 导出、Session 复用、reader 基础命令、真实 Saved Messages send/forward 与主要安全边界可用。
+- 第三代 candidate 已在真人 E2E 前把 `main@v0.1.10` 纳入 ancestry；PR #20 现在直接以 `main` 为 base。
 
-正式 v0.1.10 不受第三代 candidate 分支影响。
+正式 v0.1.10 仍不受 candidate 分支影响；未经用户明确授权，不 merge、不创建/覆盖 v0.3.0 Release。
 
-## 2. 三代关系
+## 2. 三代关系与当前 PR
 
 ```text
 第一代 v0.1.x = GUI exporter + direct-session tgctl
@@ -26,7 +26,7 @@
 
 ```text
 codex/single-daemon-v0.2.0
-base/head at v0.3 fork time = 165b0a86c85049cb25ab51f601c210ef986556a2
+fork-time head = 165b0a86c85049cb25ab51f601c210ef986556a2
 ```
 
 第三代：
@@ -34,63 +34,46 @@ base/head at v0.3 fork time = 165b0a86c85049cb25ab51f601c210ef986556a2
 ```text
 branch: codex/personal-account-reader-v0.3.0
 PR: #20 feat: v0.3.0 personal account reader candidate
+base: main
 VERSION: v0.3.0
+state: OPEN + DRAFT
 ```
 
-PR #20 当前故意以 `codex/single-daemon-v0.2.0` 为 base，用于第三代 candidate 验证；它不是正式发布 PR，仍保持 Draft，不得在真人验收前 merge / Release。
+PR #20 已完成正式线提前整合，当前可 merge 但**故意保持 Draft**。真人验收前不得 merge / Release。
 
-## 3. v0.3 已继承的 daemon 体验
-
-v0.3 继续保持第二代已确定的桌面行为：
+## 3. v0.3 daemon 基线
 
 - daemon 是唯一 TelegramClient / Session owner；
 - GUI 和 tgctl 都走本地 authenticated Named Pipe，不再各自 direct-open SQLiteSession；
 - GUI 关闭/崩溃时活跃 export job 可继续；
-- tgctl/Codex 可按需自动唤醒 daemon；
+- tgctl/Codex 可按需唤醒 daemon；
 - export 活跃时 Telegram reader 等待；
 - export 活跃时真实 send/forward 立即 `EXPORT_IN_PROGRESS`，不得排队后偷偷发送；
 - daemon 有 Windows tray；
 - phone/OTP/2FA 只在 GUI；
 - 空闲约 10 分钟 daemon 退出；
-- v0.3 GUI + v0.3 tgctl 正常共存时不应 `SESSION_BUSY`；只有 legacy/direct Session holder 才触发 `SESSION_BUSY`。
+- v0.3 GUI + v0.3 tgctl 正常共存不应 `SESSION_BUSY`；legacy/direct Session holder 才触发 `SESSION_BUSY`。
 
 Packaged `SESSION_BUSY` native exit code 契约保持为 **8**。
 
-## 4. v0.3 已实现 Reader 命令
+## 4. v0.3 Reader 命令
 
 ```text
 tgctl account get
-
 tgctl dialogs list
-
 tgctl chats get
 tgctl chats members
-
 tgctl messages history
 tgctl messages search
 tgctl messages get
-
 tgctl topics list
 tgctl topics history
-
 tgctl media download
 ```
 
 旧命令 `status/chats list/messages search/messages get/forward/send` 继续兼容；rich search/get 有 legacy schema 过渡。
 
-Reader 使用独立模型，不把 private/bot/Saved Messages 强塞进 GUI `GroupInfo`：
-
-```text
-AccountProfile
-DialogInfo
-ChatDetails
-ParticipantInfo
-SenderInfo
-MessageInfoV3
-ForumTopicInfo
-MediaMetadata
-Page
-```
+Reader 使用独立模型：`AccountProfile / DialogInfo / ChatDetails / ParticipantInfo / SenderInfo / MessageInfoV3 / ForumTopicInfo / MediaMetadata / Page`。
 
 ## 5. Dialogs / pagination / migration
 
@@ -98,10 +81,12 @@ Page
 - Saved Messages 唯一 self row：`reference=me`；
 - default page 100，max 500；
 - cursor = base64url + HMAC-SHA256 + method/query fingerprint；不得含 access_hash/file_reference/credential；
-- dialogs 使用 canonical stable ordering；
-- history newest → older；
+- dialogs canonical stable order；history newest → older；
 - Basic Group→Supergroup logical history = current → legacy composite cursor；
-- migration 消息唯一键必须是 `(source_chat_id,message_id)`。
+- migration 消息唯一键为 `(source_chat_id,message_id)`；
+- global advanced search 已修复 legacy segment cursor 被忽略导致重复/遗漏的问题；
+- single-chat migrated search 会校验 cursor segment；迁移关系丢失时返回 `CURSOR_STALE`；
+- rich `messages get` 从 legacy source 读取时保持：`chat_id=current logical supergroup`、`source_chat_id=legacy basic group`。
 
 ## 6. Members / sender / Rich MessageInfoV3
 
@@ -109,46 +94,21 @@ Page
 - role 是查询时 current snapshot，不伪造历史管理员任期；
 - unknown role 不强制写成 member；
 - anonymous admin / send-as 不从显示名、`post_author` 或管理员列表反推隐藏个人；
-- migration legacy history 的 role snapshot 仍基于当前逻辑群。
+- migration legacy history 的 role snapshot 始终基于当前逻辑 Supergroup entity。
 
-Rich schema 覆盖：
-
-```text
-chat_id / source_chat_id / message_id
-date / edit_date
-structured sender
-text / caption
-entities
-reply_to_message_id / reply_to_top_id
-forum_topic_id
-forward_origin
-grouped_id
-views / forwards
-reactions
-poll
-service_action
-pinned
-media metadata
-availability
-```
+Rich schema 覆盖 sender、reply、forum topic、forward origin、entities、views/forwards、reactions、poll、service action、pinned、media metadata、availability。
 
 查不到消息保持 `MESSAGE_NOT_FOUND / not_found_or_unavailable`，不得武断声称“已删除”。
 
 ## 7. Advanced search / Forum
 
-Search 支持：single/global、contains、sender-id、sender-role、since/until、message-type、topic、has-link、URL domain、cursor、limit、JSON/JSONL。
+Search 支持 single/global、contains、sender-id、sender-role、since/until、message-type、topic、has-link、URL domain、cursor、limit、JSON/JSONL。
 
 - bounded candidate scan，不为凑满结果无限扫描整个账号；
 - `--url-domain` 使用真实 hostname parsing；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`；
 - 不访问 URL、不 follow redirect。
 
-Forum 使用 Telethon 1.44：
-
-```text
-functions.messages.GetForumTopicsRequest(peer=...)
-```
-
-非 Forum 返回 `NOT_A_FORUM`。
+Forum 使用 Telethon 1.44：`functions.messages.GetForumTopicsRequest(peer=...)`；非 Forum 返回 `NOT_A_FORUM`。
 
 ## 8. Media
 
@@ -156,29 +116,18 @@ functions.messages.GetForumTopicsRequest(peer=...)
 
 显式 `media download`：
 
-1. 用户必须给 output；
-2. 第一次只 plan，返回 `DOWNLOAD_CONFIRMATION_REQUIRED` + file_count/estimated_bytes/unknown_size_count/token；不创建 output dir、不下载；
+1. 必须显式指定 output；
+2. 第一次只 plan，返回 `DOWNLOAD_CONFIRMATION_REQUIRED`，不创建 output dir、不下载；
 3. token 绑定 chat/ids/output/allow-large + plan digest，短时有效；
 4. 第二次 `--confirm` 才下载；
 5. normal 20 files / 500 MiB；explicit large 最大 200 files / 5 GiB；
-6. 未知大小下载继续按实际累计 bytes 执行 hard cap；
+6. 未知大小按实际累计 bytes 执行 hard cap；
 7. `.part` → 成功后 `os.replace`；失败/取消清理当前 `.part`；
 8. 文件名做 Windows/path traversal 安全化。
 
 Ctrl+C CLI exit 130；已确认的 daemon-side bounded download 可安全 detach，半写 `.part` 不得冒充成功文件。
 
 ## 9. JSON / JSONL / exit codes
-
-JSON envelope：
-
-```json
-{"ok":true,"data":{}}
-{"ok":false,"error":{"code":"...","message":"...","details":{}}}
-```
-
-Reader JSONL：meta → item* → end；错误为单行 error。
-
-关键 exit code：
 
 ```text
 SESSION_BUSY = 8
@@ -193,76 +142,82 @@ DOWNLOAD_LIMIT_EXCEEDED = 16
 Ctrl+C = 130
 ```
 
+Reader JSONL：`meta → item* → end`；错误为单行 error。
+
 ## 10. 安全边界
 
 Reader 默认 Telegram read-only：不发送、不转发、不删除、不退群、不改 Chat Folder、不标已读、不自动下载媒体。
 
-既有 send/forward/GUI optional read-ack 仍保留但不扩权：
-
-- true forward；
-- plain-text send / `parse_mode=None`；
-- dry-run；
-- forward 默认 20、显式 large 最大 200；
-- AMBIGUOUS_CHAT 不 first-match；
-- FloodWait 返回等待秒数，不 retry storm；
-- write 已发送但响应前 transport 中断 → `WRITE_OUTCOME_UNKNOWN`，不自动 retry；
-- export 活跃时 real write → `EXPORT_IN_PROGRESS`。
+既有 send/forward/GUI optional read-ack 仍保留但不扩权：true forward、plain-text send / `parse_mode=None`、dry-run、forward 20/200 cap、AMBIGUOUS_CHAT 不 first-match、FloodWait structured stop、`WRITE_OUTCOME_UNKNOWN` 不 retry、export 活跃时 real write 拒绝。
 
 严禁普通 log/stdout/cursor 非授权泄露：api_id/api_hash、phone、OTP/2FA、Session/credentials、access_hash、file_reference、IPC secret。消息正文仅在用户明确 reader stdout JSON/JSONL 中允许；普通 app.log 不记录正文/caption/URL text/media filename。
 
-## 11. Candidate 自动化状态
+## 11. 真人验收前尾部审计已修项
 
-PR #20 在 runtime candidate head `dede883b6eb0306fe44ed7751f5bebd9d1cf3e21` 上的 Windows PR CI：
+2026-08-30 发布前复核实际发现并处理：
+
+1. 正式 `.github/workflows/release.yml` 曾遗漏 v0.1.10 的 standalone + portable packaged `SESSION_BUSY` JSON/native exit 8 gate；已恢复；
+2. 正式 Release import gate 已扩大到 daemon + reader + tgctl；
+3. v0.1.10 cp1252/UTF-8 source regression、Session lock helper、v0.1.10 release history 已完整保留；
+4. global migrated advanced-search legacy pagination bug 已修复并有回归测试；
+5. single-chat migrated search cursor segment / stale 语义已加固；
+6. migrated history 管理员角色必须使用 current logical Supergroup entity，已有回归测试；
+7. migrated rich-get 的 logical/source chat identity 已统一并有回归测试；
+8. Candidate gate 从仅 one-file 扩大到 one-file + portable；
+9. `main@v0.1.10` 已在真人 E2E 前纳入 candidate ancestry，PR #20 已 retarget 到 `main`；
+10. PR #20 当前无 review submission、无未解决 inline review thread。
+
+## 12. Frozen 真人 E2E Candidate
+
+为了保证“验收的二进制”固定且可追溯，真人验收使用以下 **frozen runtime candidate**。后续纯文档提交不替换该二进制，也不改变其运行代码。
 
 ```text
-run 33291856851 = success
-pytest = 85 passed
-GUI + reader import = success
-TGExporter PyInstaller = success
-tgctl PyInstaller = success
-real OS Session lock -> packaged SESSION_BUSY + native exit 8 = success
-TGExporter/tgctl packaged smoke = success
+runtime head: 0ad4219ef367d28326b5aca705fffe1d007db52b
+Windows PR CI run: 33293667296 = success
+pytest: 91 passed
+import gate: GUI + daemon + reader + CLI = success
+one-file TGExporter build = success
+portable TGExporter build = success
+standalone tgctl build = success
+standalone SESSION_BUSY JSON + native exit 8 = success
+portable SESSION_BUSY JSON + native exit 8 = success
+one-file GUI smoke = success
+portable GUI smoke = success
+standalone tgctl smoke = success
+portable tgctl smoke = success
 artifact upload = success
 ```
 
-该 run 生成的 candidate：
+Candidate artifact：
 
 ```text
-artifact id: 9726241546
+artifact id: 9726786295
 artifact name: TGExporter-v0.3.0-candidate-windows-x64
-artifact zip digest: 970b403037a6fe95fee7e46e106e83e6501243fa132b32a9434acc7932735091
-TGExporter.exe: cea25ce0022fb517933e24029d7fc167050b7260a60ec3c653c1ccdd54a32ffd
-tgctl.exe: 6e46597689a24281089cfba827b0755414b00698c5b9471d3566374b5286e25a
+artifact outer ZIP digest: 37309a137577f8aa3de63bc5ff2a188147b1908be5d4e7a0e53df531358503f7
+
+TGExporter-v0.3.0-candidate-windows-x64.exe
+SHA-256: 94f43dadc421e67de0a5f8cb7d1ff0b3f98bb85e46a46ca423c9d7d025fc55c6
+
+TGExporter-v0.3.0-candidate-windows-x64-portable.zip
+SHA-256: 6d0dad9514eab1ff1c4d80b35df704951fc7fe63ff23bea2536dcf01c19626bc
+
+tgctl.exe
+SHA-256: aee8edbe9c7693b3fa299757bc386b285c42003e03d787718903b7223ae638a0
 ```
 
-**注意：上述 artifact 对应 runtime head `dede...`。** 2026-08-30 真人 E2E 前尾部审查又补了 Release workflow / handoff 等非业务收尾；新的 branch head 必须再次 Windows CI 全绿后，优先使用新 artifact 做真人验收。
+Artifact URL：`https://github.com/3ll3-3ll3/tg-exporter/actions/runs/33293667296/artifacts/9726786295`
 
-## 12. 2026-08-30 尾部审查结论与已修项
+## 13. 真人 E2E 待验证
 
-真人验收前复核发现并处理：
-
-1. v0.3 branch 的正式 `.github/workflows/release.yml` 曾遗漏 v0.1.10 已有的 **standalone + portable packaged `SESSION_BUSY` JSON/native exit 8 gate**；已 forward-port；
-2. 正式 Release import check 已扩大到 daemon + reader + tgctl，而不是只检查旧 GUI/CLI import；
-3. 本 HANDOFF 原先把“更新 docs / 创建 implementation PR / PR CI / candidate artifact”等已完成事项仍列为 pending；已纠正。
-
-仍故意保持：
-
-- PR #20 Draft；
-- 不 merge；
-- 不创建/覆盖 v0.3.0 Release；
-- `docs/releases/v0.3.0.md` 仍写 Candidate/未发布，正式发布授权后再改为最终 Release Notes。
-
-## 13. 真人 E2E 现在真正剩余的项目
-
-CI/mock 不能替代以下用户本机只读验收：
+CI/mock 不能替代以下用户本机验收：
 
 1. all dialogs：group/supergroup/channel/private/bot/Saved/archive；
 2. Telegram Chat Folder membership；
 3. 真实聊天最近 500 history；
 4. owner/admin；
-5. sender / sender-role / pikpak + real mypikpak.com domain；
+5. sender / sender-role / real domain search；
 6. anonymous admin/send-as 不误归属；
-7. history 多页无 overlap/gap；
+7. history/search 多页无 overlap/gap；
 8. since/until；
 9. Saved Messages history/search；
 10. MESSAGE_NOT_FOUND；
@@ -279,18 +234,13 @@ CI/mock 不能替代以下用户本机只读验收：
 
 默认真人 E2E 不执行 send/forward/mark-read，也不需要真实媒体下载。
 
-## 14. 真人验收通过后的正式集成路径
+## 14. 真人验收通过后的发布路径
 
-这是一个重要发布纪律：**不要把 PR #20 直接 merge 到它当前的 v0.2 base 后就声称 v0.3 已进入 main。**
-
-PR #20 当前 base 是 `codex/single-daemon-v0.2.0`，而正式线是 `main @ v0.1.10`。真人 E2E 通过后必须先完成最终正式线集成：
+正式线整合已经提前完成，因此不再需要“验收后先把 v0.2/v0.3 再整合到 main”的高风险步骤。
 
 ```text
 用户 E2E PASS
-→ 把 v0.2 + v0.3 完整实现集成/retarget 到最新 main（必须保留 v0.1.10 ancestry/行为）
-→ 解决任何 integration conflict
-→ 再跑完整 Windows PR CI / packaged gates
-→ 确认集成没有改变已验收 runtime 语义
+→ 如 E2E 未引发业务代码修改，确认 PR #20 仍 mergeable / checks 正常
 → 将 docs/releases/v0.3.0.md 从 Candidate Notes 收尾为正式 Release Notes
 → 用户明确授权“发布 v0.3.0”
 → release: v0.3.0 进入 main
@@ -299,10 +249,10 @@ PR #20 当前 base 是 `codex/single-daemon-v0.2.0`，而正式线是 `main @ v0
 → 更新 HANDOFF 为正式版状态
 ```
 
-若最终集成产生业务代码变化，必须针对受影响功能补做 E2E；不能拿集成前的真人结果替代集成后代码。
+若真人 E2E 导致任何业务代码变化，必须针对受影响功能重新跑 Windows CI，并对受影响真实场景补做 E2E。
 
 ## 15. 当前唯一合理下一步
 
-等待当前尾部收尾 head 的 Windows CI 全绿并生成新的 candidate artifact，然后交给用户做 **真实 Telegram 账号只读 E2E**。
+**交用户进行真实 Telegram 账号 E2E。**
 
-在此之前不要继续堆新功能，不要 merge，不要 Release。
+在真人验收结论出来前，不继续堆新功能，不 merge，不 Release。
