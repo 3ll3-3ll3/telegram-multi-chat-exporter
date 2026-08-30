@@ -1,73 +1,46 @@
 # Known Issues
 
-本文件只记录**当前仍未解决、会影响后续开发/验收的已知问题**。已完全解决且仅有历史意义的 bug 放在 `HANDOFF.md` 的历史回归知识中。
+本文件优先记录**当前仍未解决、会影响后续开发/验收的问题**。已解决但具有长期回归价值的问题可保留简短历史记录，并指向对应 Issue/ADR。
 
-## KI-001 — Current-unread snapshot is captured too early
+## Current open blockers
 
-**Status:** Open / correctness mismatch / should be fixed before final v0.3 human E2E sign-off.  
-**Affected:** Production v0.1.x behavior and inherited v0.3 export path unless changed.  
-**Discovered during AI handoff audit:** 2026-08-30.
+截至 2026-08-30，**没有已知未修复的 v0.3 automated-Candidate correctness blocker**。下一阶段未知项主要来自用户真实 Telegram 账号 E2E。
 
-### Intended product semantics
+## KI-001 — Current-unread snapshot was captured too early
 
-For each group using **current unread**, freeze the unread window at the moment that group's export actually begins:
+**Status:** Resolved on v0.3 Candidate branch / GitHub Issue #22 closed completed.  
+**Fixed runtime Candidate:** `7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c`  
+**Windows Candidate run:** `33296790070 = success`, **95 passed**.  
+**Artifact:** `9727721868`.
 
-```text
-start_read_inbox_max_id < message_id <= latest_message_id_at_export_start
-```
+### Correct semantics now implemented
 
-Messages arriving after that per-group export snapshot must not be included or acknowledged by this run.
-
-This matters especially for a batch with many groups: group 5 may begin several minutes after the GUI catalogue was last refreshed.
-
-### Current implementation
-
-Current code uses the `GroupInfo.read_inbox_max_id` and `GroupInfo.latest_message_id` values captured when the group catalogue was loaded/refreshed.
-
-`src/telegram_exporter/exporter.py` currently documents/implements:
+For each group using current-unread mode, freeze the unread window when **that specific group's export actually begins**:
 
 ```text
-Freeze "current unread" to the dialog snapshot captured when the
-group catalogue was loaded/refreshed.
+lower = read_inbox_max_id_at_group_start
+upper = latest_message_id_at_group_start
+export only lower < message_id <= upper
 ```
 
-`ExportCoordinator` deserializes the submitted plan and calls `export_group()` directly; it does not refresh the per-group Telegram read/latest state immediately before exporting that group. `mark_unread_snapshot_read()` also acknowledges `plan.group.latest_message_id`, i.e. the same earlier snapshot.
+- stale catalogue values are not used as execution bounds;
+- each group in a multi-group batch gets its own execution-start snapshot;
+- messages arriving after the snapshot remain outside this run;
+- export and optional read acknowledgement use the exact same frozen upper bound;
+- export failure never acknowledges read state;
+- JSON success + read-ack failure keeps the JSON;
+- Basic Group→Supergroup current-unread uses only the current logical Supergroup, not the legacy peer.
 
-### Why this is a bug
+Implementation lives in PR #20 branch, including `src/telegram_exporter/unread_snapshot.py` and daemon `ExportCoordinator` execution-plan freezing. Regression tests cover multi-group timing, upper-bound behavior, migrated legacy/current identity, failure/no-ack and JSON-survives-ack-failure.
 
-A long delay can exist between catalogue refresh and export start. During that interval:
+Issue: <https://github.com/3ll3-3ll3/tg-exporter/issues/22>  
+ADR: `docs/decisions/007-current-unread-snapshot-at-export-start.md`
 
-- messages that were unread at actual export start but arrived after refresh can be omitted;
-- the run's notion of “current unread” does not match the user-confirmed definition;
-- in multi-group batches, later groups can have increasingly stale snapshot bounds.
+## Historical regression knowledge
 
-The current implementation is internally consistent for acknowledgement (it does not acknowledge beyond its stale upper bound), but the snapshot timing itself is wrong.
+Keep these in mind when changing adjacent code:
 
-### Required fix direction
-
-Do **not** solve this by removing the upper bound or by reading live-unbounded history.
-
-At the beginning of each group's current-unread export, while the daemon/export owns Telegram work:
-
-1. fetch the current dialog/read state for that logical current chat;
-2. freeze `read_inbox_max_id` and `latest_message_id` into an immutable per-export snapshot;
-3. export only `read_inbox_max_id < id <= latest_message_id`;
-4. after JSON atomic success + checkpoint, optional read acknowledgement may advance only through that frozen `latest_message_id`;
-5. messages arriving after the snapshot remain unread/not exported by this run.
-
-Basic Group→Supergroup current-unread continues to use only the current Supergroup.
-
-### Regression tests required
-
-At minimum:
-
-- catalogue snapshot old, export-start snapshot newer → export uses newer start snapshot;
-- message arrives after export-start snapshot → excluded;
-- optional read ack uses exactly export-start frozen upper bound;
-- export failure → no read ack;
-- JSON success + read-ack failure → JSON remains;
-- multi-group batch obtains a separate snapshot when each group begins, not one batch-global or catalogue-global snapshot.
-
-### Release impact
-
-Do not mark v0.3 human E2E fully PASS or release v0.3.0 while this mismatch is known and unfixed, unless the user explicitly changes the product requirement back to catalogue-refresh semantics.
+- qasync blocking modal caused asyncio task re-entry; do not reintroduce nested modal loops;
+- packaged Windows cp1252 Chinese JSON error handling once changed `SESSION_BUSY` native exit 8 into exit 1; standalone/portable packaged regression must remain;
+- migrated global advanced-search legacy cursor once caused duplicate/gap behavior;
+- migrated rich-get logical/source chat identity once diverged.
