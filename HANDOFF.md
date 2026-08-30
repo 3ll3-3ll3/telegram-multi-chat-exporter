@@ -7,211 +7,171 @@
 # Current Project State
 
 - Repository: `3ll3-3ll3/tg-exporter`
-- Production version: **v0.1.10**（直到正式 v0.3.0 GitHub Release 实际创建并核验前仍以此为准）
-- Production commit/tag: `cedb02035597aa607fac399666154519f480c431` / `v0.1.10`
-- Current development version: **v0.3.0 release candidate**
-- Development branch: `codex/personal-account-reader-v0.3.0`
-- Implementation PR: **#20**, base `main`
-- Issue #22: **fixed + closed**
-- Frozen runtime Candidate accepted by user: `7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c`
-- Windows Candidate run: `33296790070 = success`
-- pytest: **95 passed**
-- Candidate artifact: `9727721868`
-- Human acceptance: **PASS declared by user on 2026-08-30; no new runtime defect reported in that acceptance step**
-- Current task: **formal v0.3.0 release only; do not add new features**
+- Production version: **v0.3.0**
+- Production commit/tag: `8e230e33ea928bcf71296e4e5379b097446dbec5` / `v0.3.0`
+- Current development version: **v0.3.1 runtime-fix candidate line**
+- Development branch: `codex/v0.3.1-runtime-fixes`
+- Base: `main@8e230e33ea928bcf71296e4e5379b097446dbec5`
+- v0.3.0 tag/Release: immutable; do not move, overwrite, delete, or rebuild in place
+- Current task: finish v0.3.1 validation and PR; **do not publish a v0.3.1 Release without explicit user authorization after human acceptance**
 
-## Project Summary
+## Why v0.3.1 exists
 
-TG Exporter / TG 导出器是 Windows 本地 Telegram 工具：
+Real v0.3.0 acceptance found three runtime-quality problems to address:
 
-1. GUI：按群独立导出文字/caption JSON；
-2. `tgctl`：供 Codex/命令行查询 Telegram，并在既有安全边界内 true-forward / 纯文本 send；
-3. v0.2/v0.3：single daemon 是唯一 TelegramClient/Session owner，GUI/tgctl 通过 authenticated Windows Named Pipe JSON IPC；
-4. v0.3 Personal Account Reader：分页读取账号、dialogs、成员/管理员、rich messages、Forum、Saved Messages、media metadata，并提供显式两阶段本地媒体下载。
+1. packaged `tgctl messages search --url-domain ...` could crash in domain normalization;
+2. normal Alt+F4 GUI close could log `Fatal application error` / `RuntimeError: Event loop stopped before Future completed`;
+3. real bounded message samples contained too many `sender_type=unknown`, and `owner_visibility=not_found` was too coarse.
 
-不是 Telegram Desktop 替代品，不是云服务/数据库，不是 Bot API，也不是 24/7 自主 Agent。
+The patch must preserve all v0.3.0 security and single-daemon invariants.
 
-## Production Definition
-
-本项目没有远程生产数据库/服务器。Production 指：
-
-- GitHub 正式 Release Windows 二进制；
-- 用户本机 `%APPDATA%\TelegramMultiChatExporter\` 下真实 Session/API/settings/checkpoint/log/cache；
-- 用户真实 Telegram 账号和本地导出文件。
-
-正式 v0.3.0 Release 实体和资产未核验前，不得把 Production 从 v0.1.10 改成 v0.3.0。
-
-## Current Architecture
+# Architecture / safety invariants
 
 ```text
 TGExporter GUI ─┐
-               ├─ authenticated Named Pipe / UTF-8 JSON → TG daemon → Telethon → one user Session
+               ├─ authenticated Windows Named Pipe → TG daemon → Telethon → one user Session
 tgctl / Codex ─┘
 ```
 
-v0.3 daemon 规则：
+- daemon remains the only normal Telegram Session owner;
+- GUI close only detaches its lease and local tasks; it must not terminate the shared daemon;
+- reader remains bounded/default 100/max 500 and does not download media by default;
+- real send/forward remain explicit write operations with dry-run support and existing caps;
+- current-unread export keeps the v0.3.0 per-group export-start snapshot semantics;
+- no secret, Session content, phone/OTP/2FA, access hash/file reference, message body, caption, URL, or media filename may enter ordinary logs/Issues/PRs/CI artifacts;
+- no real send/forward, mark-read, media download, group mutation, FloodWait stress, or Session reset during default acceptance.
+
+# v0.3.1 fixes
+
+## 1. Packaged url-domain crash
+
+Root cause: v0.3.0 domain normalization relied on Python runtime codec lookup for `"idna"`. Source Python had the codec, while frozen PyInstaller execution could miss the dynamically resolved codec/module and fail before filtering.
+
+Fix:
+
+- explicit offline standard-library IDNA normalization;
+- explicit domain/URL validation and canonical host extraction;
+- malformed input → `INVALID_ARGUMENT`, never a generic `TELEGRAM_ERROR`;
+- no public-suffix download/network dependency;
+- PyInstaller tgctl build includes `encodings.idna` as defense in depth;
+- CI directly executes url-domain smoke on final standalone and portable `tgctl.exe`.
+
+Regression coverage includes bare domain, `www`, case, full URL, subdomain, whitespace, invalid input, no match, suffix lookalikes, pagination, and cursor query binding.
+
+## 2. GUI normal-close fatal
+
+Root cause: v0.3.0 waited for Qt `aboutToQuit` and then attempted async shutdown, but Qt/qasync could already have stopped the underlying event loop. `run_until_complete` then observed unfinished work and raised `Event loop stopped before Future completed`.
+
+Fix order:
 
 ```text
-LOCAL status/job/heartbeat       → immediate
-export                           → exclusive Telegram job
-Telegram reader                  → waits while export active
-real send/forward during export  → EXPORT_IN_PROGRESS, never queued for later
-explicit media download          → bounded local-disk side effect
+last window closes
+→ keep Qt event loop alive
+→ cancel/await GUI init + job-monitor tasks
+→ cancel/await proxy heartbeat
+→ client.detach GUI lease
+→ async app coroutine returns
+→ Qt/qasync event loop ends normally
 ```
 
-GUI/tgctl 不得 fallback direct SQLiteSession。`SESSION_BUSY` 只用于 legacy/direct process 已占用 SessionLease 的兼容边界，packaged native exit code 必须保持 8。
+No `loop.stop()` is used to interrupt unfinished shutdown. Real shutdown exceptions remain logged/re-raised.
 
-## GUI Export Invariants
+## 3. Sender / owner diagnostics
 
-- 输出：`output_root / Export Category / group / YYYY-MM-DD_HH-mm-ss.json`；同秒 `_2/_3/...`；
-- 每群每次 JSON 独立，不读取/合并/覆盖历史；
-- Export Category 是本地分类，不是 Telegram Chat Folder；
-- 默认只导出文字/caption，不下载消息媒体；头像仅 UI cache；
-- Basic Group→Supergroup catalogue 只显示 current logical group；legacy 只用于历史兼容；
-- qasync async flow 禁止重新引入 blocking nested modal；
-- 兼容数据目录固定 `%APPDATA%\TelegramMultiChatExporter\`。
+Sender identity now uses Telegram-provided fields only: `sender`, `from_id`, `peer_id`, `sender_id`, `sender_chat`, `post_author`, `via_bot_id`; it never guesses from text, links, or nicknames.
 
-### Current unread — Issue #22 fixed semantics
+Recoverable cases include user, channel/chat send-as, broadcast channel posts, anonymous admins, and deleted-user entities when Telegram still supplies a peer. `forward_origin` is always separate from the actual sender.
 
-每个群在**该群真正开始执行导出时**单独冻结：
+If Telegram does not provide enough identity information, keep `sender_type=unknown` and set a reason such as:
 
-```text
-lower = read_inbox_max_id_at_group_start
-upper = latest_message_id_at_group_start
-export only lower < id <= upper
-```
+- `service_message_without_sender`
+- `forwarded_message_without_actual_sender`
+- `post_author_without_sender_peer`
+- `unsupported_or_unavailable_sender_peer`
+- `telegram_sender_not_provided`
 
-- 不再使用 catalogue refresh 时的旧 snapshot；
-- snapshot 后新到消息不属于本次 run；
-- optional read-ack 必须使用与 export 完全相同的 frozen upper；
-- `JSON atomic success → checkpoint → optional read ack`；
-- export failure 不 read-ack；read-ack failure 不删除已成功 JSON；
-- migrated current-unread 只刷新 current logical Supergroup，legacy Basic Group 不参与。
+Owner visibility distinguishes at least: `available`, `insufficient_permissions`, `participants_unavailable`, `creator_not_in_returned_page`, `telegram_not_returned`, and supportable `not_found` cases.
 
-实现：`src/telegram_exporter/unread_snapshot.py` + daemon `ExportCoordinator` per-group execution plan copy。
+All new fixtures are synthetic/de-identified.
 
-## v0.3 Reader Completed
+# Automated validation
+
+First fully green runtime candidate before documentation-only handoff commits:
 
 ```text
-tgctl account get
-tgctl dialogs list
-tgctl chats get
-tgctl chats members
-tgctl messages history
-tgctl messages search
-tgctl messages get
-tgctl topics list
-tgctl topics history
-tgctl media download
-```
-
-关键语义：
-
-- dialogs 覆盖 group/supergroup/channel/private/bot/Saved/archive/forum/folder safe metadata；
-- reader 独立模型，不破坏 GUI GroupInfo；
-- default page 100 / max 500；HMAC/query-bound cursor，不含 access_hash/file_reference；
-- rich MessageInfoV3：sender/reply/forward/entities/reactions/poll/service/media 等；
-- current sender-role，不伪造历史管理员身份；anonymous/send-as 不反推个人；
-- migration logical history current→legacy，唯一定位 `(source_chat_id,message_id)`；
-- URL domain 使用真实 hostname parser；
-- Forum；
-- media 默认 metadata-only；显式 download = plan→confirmation→download + hard caps + `.part` atomic rename。
-
-Existing `status/chats list/messages search/messages get/forward/send` 继续兼容。send/forward 安全边界继续是 true forward、plain text、dry-run、20/200 cap、AMBIGUOUS_CHAT、FloodWait structured stop、unknown-outcome no retry、no-body logging。
-
-## Pre-Release Tail Audit / Fixes Completed
-
-1. Release workflow 恢复 standalone + portable `SESSION_BUSY JSON/native exit=8` gate；
-2. v0.1.10 UTF-8/cp1252 regression 完整前移；
-3. migrated global advanced-search legacy cursor duplicate/gap bug 已修；
-4. single-chat migrated cursor / `CURSOR_STALE` 已加固；
-5. legacy history role 使用 current logical Supergroup；
-6. migrated rich-get logical/source IDs 一致；
-7. Candidate gate 包含 one-file + portable；
-8. `main@v0.1.10` 已纳入 PR #20 ancestry，PR base=`main`；
-9. Issue #22：current-unread 改为 per-group export-start snapshot，并补回归；
-10. migrated legacy peer 不会污染 current-unread snapshot；
-11. PR #20 无未解决 inline review thread；
-12. `docs/releases/v0.3.0.md` 已从 Candidate Notes 收尾为正式 Release Notes。
-
-## Frozen Human-Accepted Candidate
-
-```text
-runtime candidate head: 7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c
-Windows PR CI run: 33296790070
+runtime head: 9496416e081178d87e2fed3ccda0c248c3c18c40
+Windows run: 33302689526
 result: success
-pytest: 95 passed in 2.19s
-one-file build: success
-portable build: success
+pytest: 125 passed in 1.94s
+focused v0.3.1 tests: 30 passed in 0.52s
+compileall: success
+git diff --check: success
+source url-domain smoke: success
+one-file GUI build: success
+portable GUI build: success
 tgctl build: success
-standalone SESSION_BUSY JSON/native exit 8: success
-portable SESSION_BUSY JSON/native exit 8: success
-one-file + portable GUI smoke: success
-standalone + portable tgctl smoke: success
-artifact upload: success
+packaged standalone url-domain smoke: success
+packaged portable url-domain smoke: success
+packaged SESSION_BUSY JSON/native exit=8: success
+packaged GUI/tgctl smoke: success
+repository worktree clean gate: success
 ```
 
-Artifact：
+Candidate artifact from that runtime head:
 
 ```text
-id: 9727721868
-name: TGExporter-v0.3.0-candidate-windows-x64
-URL: https://github.com/3ll3-3ll3/tg-exporter/actions/runs/33296790070/artifacts/9727721868
+artifact id: 9729505508
+artifact name: TGExporter-v0.3.1-candidate-windows-x64
 outer artifact ZIP SHA-256:
-f68ea1d7b711f51c122a972008a32f1ffa06355ba1c85bdc9bd870e4fb67caca
+43cfd77feb2c2aff2b05b8a8dd057d1d3605a1f24b75430431ddd3798800f32c
 
-TGExporter-v0.3.0-candidate-windows-x64.exe
-0afccfe03c005b78ad90aefd904f75fa53f536f22f7d90a90f00f1928fd403ae
+TGExporter-v0.3.1-windows-x64.exe
+389f970e60a0d473df2a2f46a1c9a6d503a14235bb024c5b3d823323a68e6b15
 
-TGExporter-v0.3.0-candidate-windows-x64-portable.zip
-5fae791e3e8a87bafcfc4b17256349d1945787b163d4114a01bed05fadb9f7e8
+TGExporter-v0.3.1-windows-x64-portable.zip
+5613210ea2b7b29a651c1fa6f84fe7eabaf7abbbf0d46f71de00e67a48642b2d
 
 tgctl.exe
-01e566de4cc95fff273b68e4039b346843e2b3c54ee8f4afb74e9fe7a50189d5
+171056684c793f71619596ef60de1c6f8192d99f956f6e248945cf5c762196f5
 ```
 
-Candidate Artifact 仅用于发布前验收，不是正式分发物。正式资产必须由 Release workflow 从最终 main commit 重新构建，并以正式 `SHA256SUMS.txt` 为准。
+These hashes belong specifically to run `33302689526` / runtime head `9496416e...`. Documentation commits after that head require final PR-head CI before merge; do not silently relabel these hashes as belonging to a later build.
 
-## Human Acceptance
+# Remaining acceptance gate
 
-2026-08-30 用户明确确认第三版验收通过，并要求继续下一步工作。本次确认未报告新的 runtime defect。
+Automated CI cannot replace the real-account/local-Windows checks. Before calling v0.3.1 release-ready, still verify on the user's authorized machine/account, without forbidden writes:
 
-项目流程上 human acceptance gate 已满足；仍必须完成：final PR CI → Ready → merge `release: v0.3.0` → formal Release workflow → Release/tag/assets/hash 核验。
+1. packaged `tgctl.exe` real-chat domain search;
+2. idle GUI close;
+3. refresh-groups then close;
+4. a 0-message current-unread export with mark-read disabled, then close;
+5. two GUI instances started together and closed one by one;
+6. `tgctl status` after each close remains usable and no GUI close ends the shared daemon;
+7. new log segment contains zero normal-close Fatal/Traceback/un-awaited-coroutine/Task-destroyed entries;
+8. re-run the same bounded sender sample used for the v0.3.0 finding and report before/after counts without committing or displaying real message bodies/URLs/IDs;
+9. privacy audit reports counts only, not sensitive log lines.
 
-## Known Risks / Technical Debt
+If a requested check would require real send/forward, mark-read, media download, group mutation, FloodWait stress, or Session reset, stop and obtain separate user authorization.
 
-- `capture_current_unread_snapshot()` 当前通过 `iter_dialogs()` 精确查 current chat，正确性优先；大量 dialogs + 大批群时可能有 O(groups × dialogs) 延迟，可在 v0.3.0 发布后单独优化，不在本次 Release 临时重构；
-- branch protection 不是 GitHub 强制时，Agent 必须自行遵守 PR/no-force-push/no-release-overwrite；
-- Telegram 权限/历史可见性会因真实账号而异，unavailable 不得伪造；
-- Candidate 与正式 Release 是两次独立构建，正式资产 hash 预期可能与 Candidate 不同。
+# Current workflow
 
-## Current Release Steps
-
-```text
-1. final PR #20 head CI PASS
-2. mark PR #20 Ready
-3. merge with commit title/message starting `release: v0.3.0`
-4. wait formal Release workflow
-5. require pytest/import/build/SESSION_BUSY/smoke/assets all PASS
-6. verify GitHub Release `v0.3.0` actually exists
-7. verify tag/target commit and four assets
-8. verify SHA256SUMS.txt / asset digests
-9. only then update HANDOFF production state to v0.3.0
-```
-
-不得覆盖/删除旧 tag 或 Release。若 Release workflow 失败，先修失败，不对外声称已发布。
+1. finish documentation on `codex/v0.3.1-runtime-fixes`;
+2. require the final branch head Windows CI to PASS;
+3. create/open PR from `codex/v0.3.1-runtime-fixes` to `main`;
+4. keep PR unmerged until the remaining human acceptance is recorded;
+5. after human PASS and explicit user authorization, merge through PR;
+6. only then prepare a **new** `v0.3.1` tag/Release; never alter `v0.3.0`.
 
 # New Chat Resume Instructions
 
-新的 GPT 接手时：
+A new agent should read:
 
-1. 读 `AGENTS.md`；
-2. 读本 `HANDOFF.md`；
-3. 读 `docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`、`docs/ARCHITECTURE.md`、`docs/DECISIONS.md`、`docs/TESTING.md`、`SECURITY.md`、`docs/releases/v0.3.0.md`；
-4. 核对 PR #20 当前状态/head/CI；
-5. 核对 Issue #22 为 closed；
-6. 核对 Latest Release；
-7. 若 v0.3.0 Release 已存在，必须核验 target/assets/SHA 后再把它当 Production；
-8. 在这些核对完成前不要修改新功能。
+1. `AGENTS.md`
+2. this `HANDOFF.md`
+3. `README.md`
+4. `docs/CODEX_TGCTL.md`
+5. `docs/releases/v0.3.0.md`
+6. `docs/releases/v0.3.1.md`
+7. architecture/security/testing/release docs as needed
 
-恢复后先输出：当前 Production、发布流程状态、风险和下一步。GitHub 当前事实若与本文件冲突，以 GitHub 为准并更新 HANDOFF。
+Then verify GitHub current `main`, `v0.3.0` Release/tag, `codex/v0.3.1-runtime-fixes`, its PR, and latest Windows CI. GitHub current facts override this snapshot.
