@@ -1,9 +1,9 @@
-# Testing Guide — v0.3 Candidate
+# Testing Guide — v0.3.1 Candidate
 
 本项目测试分四层：
 
-1. unit/mock：模型、cursor、reader/filter、daemon scheduling、GUI legacy 行为、安全边界；
-2. Windows package CI：TGExporter/tgctl PyInstaller、真实 OS Session lock、native exit code；
+1. unit/mock：模型、cursor、reader/filter、daemon scheduling、GUI 行为、安全边界；
+2. Windows package CI：TGExporter/tgctl PyInstaller、真实 OS Session lock、native exit code、最终 EXE smoke；
 3. Candidate artifact：one-file + portable + tgctl + SHA-256；
 4. 用户真实 Telegram E2E。
 
@@ -11,40 +11,68 @@
 
 ## 1. CI 基线
 
+使用项目独立虚拟环境：
+
 ```powershell
-pip install -e ".[dev]"
-pytest -q
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe -m compileall src
+git diff --check
 ```
 
-v0.3 Candidate gate 至少要求：
+v0.3.1 Candidate gate 至少要求：
 
 ```text
-pytest -q
+full pytest
+v0.3.1 domain / GUI-shutdown / sender focused regressions
+compileall
+git diff --check
 GUI + daemon + reader + CLI import
+source url-domain smoke
 TGExporter one-file PyInstaller
 TGExporter portable onedir PyInstaller
 tgctl one-file PyInstaller
+standalone + portable packaged url-domain smoke
 standalone + portable legacy OS Session lock → packaged SESSION_BUSY JSON + native exit 8
 one-file + portable GUI smoke
 standalone + portable tgctl smoke
+repository worktree clean gate
 candidate SHA-256 generation
 artifact upload
 ```
 
-Issue #22 修复后的 frozen runtime Candidate：
+First fully green v0.3.1 runtime candidate before documentation-only commits:
 
 ```text
-runtime: 7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c
-Windows run: 33296790070 = success
-pytest: 95 passed in 2.19s
-artifact: 9727721868
+runtime: 9496416e081178d87e2fed3ccda0c248c3c18c40
+Windows run: 33302689526 = success
+pytest: 125 passed in 1.94s
+focused regressions: 30 passed in 0.52s
+artifact: 9729505508
 ```
 
-## 2. GUI/v0.2 regression
+Hashes are recorded in `docs/releases/v0.3.1.md` and `HANDOFF.md`. Final PR-head CI must also pass after documentation commits.
 
-不得因 Reader 或 daemon 修改破坏：focused workspace、Telegram Chat Folder、avatar lazy load、Export Category、category/group/timestamp JSON、same-second no overwrite、migration collapse/date-range history、since-last checkpoint、Option B 顺序、qasync shutdown。
+## 2. GUI / daemon regression
 
-v0.3 GUI 与 v0.3 tgctl 都经 daemon，正常共存不应 `SESSION_BUSY`。export 活跃时 reader 等待；真实 send/forward 立即 `EXPORT_IN_PROGRESS`。
+不得因 v0.3.1 修改破坏：focused workspace、Telegram Chat Folder、avatar lazy load、Export Category、category/group/timestamp JSON、same-second no overwrite、migration collapse/date-range history、since-last checkpoint、current-unread snapshot、single daemon coexistence。
+
+正常 GUI close 的新长期 gate：
+
+```text
+last window closes
+→ Qt/qasync stays alive
+→ cancel + await GUI-local init/monitor tasks
+→ cancel + await heartbeat
+→ detach GUI lease
+→ async app finishes
+→ event loop ends normally
+```
+
+禁止在 `run_until_complete` 未完成时直接 `loop.stop()`。正常关闭不得请求 shared daemon shutdown；真正 shutdown exception 仍应记录。
+
+自动测试至少验证退出协调、local task cancellation、heartbeat cancellation、client.detach 和 no `system.shutdown`。真实 Alt+F4、多 GUI 与日志计数仍是人工 E2E。
 
 ## 3. Current-unread export-start snapshot regression
 
@@ -62,18 +90,18 @@ export lower < id <= upper
 
 - catalogue 中 stale snapshot 与 export-start 新状态不同 → 使用 export-start snapshot；
 - upper frozen 之后到达的新消息 → 本次不导出；
-- multi-group batch → 每个群轮到执行时分别 snapshot，不是 catalogue-global/batch-global；
+- multi-group batch → 每个群轮到执行时分别 snapshot；
 - export 与 optional read-ack 使用同一 frozen lower/upper；
 - export failure → 不 read-ack；
 - JSON success + read-ack failure → JSON 保留；
-- migrated Basic Group 即使存在/先枚举，也不得被 current-unread 使用；只匹配 current logical Supergroup；
+- migrated Basic Group 不参与 current-unread；
 - catalogue/workspace GroupInfo 不因 execution snapshot 被原地修改。
-
-不得用“删除 upper bound”或 live-unbounded read 代替正确修复。
 
 ## 4. Cursor / page
 
-必须覆盖：default 100/max 500、HMAC sign/verify、method/query mismatch、tamper、不含 access_hash/file_reference/credential、dialogs stable pagination、history 2+ pages no overlap/gap、migration current→legacy segment、search continuation、`INVALID_CURSOR`、`CURSOR_STALE`。
+覆盖 default 100/max 500、HMAC sign/verify、method/query mismatch、tamper、不含 access_hash/file_reference/credential、dialogs stable pagination、history 2+ pages no overlap/gap、migration current→legacy、search continuation、`INVALID_CURSOR`、`CURSOR_STALE`。
+
+v0.3.1 url-domain 的 cursor query 必须绑定**规范化后的 hostname**。等价的大小写/完整 URL 输入应可续页；不同域名必须 `INVALID_CURSOR`。
 
 ## 5. Dialogs/account
 
@@ -83,11 +111,32 @@ export lower < id <= upper
 
 测试 owner/admin/member、admin title、bot/deleted account、权限不可枚举、current role semantics、unknown role 不强制 member、Basic Group 与 Channel/Supergroup API 路径。禁止显示名推断 owner/admin。
 
+v0.3.1 owner diagnostics 至少区分：
+
+```text
+available
+insufficient_permissions
+participants_unavailable
+creator_not_in_returned_page
+telegram_not_returned
+not_found (only where returned data supports that conclusion)
+```
+
 ## 7. Structured sender / Rich MessageInfoV3
 
-至少：user sender、channel/chat send-as、anonymous admin、reply/reply_top、forum_topic_id、forward origin、entities、views/forwards、reactions、poll、service action、media metadata、caption/text、MESSAGE_NOT_FOUND。
+至少：user sender、channel/chat send-as、broadcast channel post、anonymous admin、deleted user with Telegram peer、reply/reply_top、forum_topic_id、forward origin、entities、views/forwards、reactions、poll、service action、media metadata、caption/text、MESSAGE_NOT_FOUND。
 
-匿名管理员不得错误绑定具体 user。`availability` 不得伪造 deleted=true。
+v0.3.1 不得根据正文、链接或昵称猜 sender。实际 sender 与 `forward_origin` 必须分开。
+
+无法恢复 sender 时保持 `sender_type=unknown`，并用脱敏 fixture 覆盖 `unknown_reason`：
+
+```text
+service_message_without_sender
+forwarded_message_without_actual_sender
+post_author_without_sender_peer
+unsupported_or_unavailable_sender_peer
+telegram_sender_not_provided
+```
 
 ## 8. History / migration
 
@@ -95,18 +144,26 @@ export lower < id <= upper
 
 Migration history 唯一键 `(source_chat_id,message_id)`，不能只按 message id 去重。legacy source 的 logical `chat_id` 仍是 current Supergroup，`source_chat_id` 指 legacy Basic Group。
 
-## 9. Advanced search
+## 9. Advanced search / url-domain
 
 测试 single/global、contains、sender-id、current sender-role、since/until、message type、topic、has-link、url-domain、cursor。
 
+v0.3.1 domain cases：
+
 ```text
-mypikpak.com          match
-cdn.mypikpak.com      match
-mypikpak.com.evil.com reject
-notmypikpak.com       reject
+mypikpak.com                         canonical/match
+www.mypikpak.com                     canonical
+MYPiKPAK.CoM                         canonical
+https://mypikpak.com/path?q=1        canonical
+cdn.mypikpak.com                     match as subdomain
+surrounding whitespace               canonical
+mypikpak.com.evil.com                reject
+notmypikpak.com                      reject
+malformed host                       INVALID_ARGUMENT
+no match                              empty valid page
 ```
 
-不访问 URL、不 follow redirect。Candidate scan 有上限，不为凑满结果无限读账号。
+域名规范化必须离线，不依赖 PSL/network。CI 必须直接运行最终 standalone 和 portable `tgctl.exe --smoke-test-url-domain`，不能只测源码。
 
 ## 10. Forum
 
@@ -145,44 +202,67 @@ JSON stdout 是单一 envelope，不混日志。JSONL = `meta → item* → end`
 
 Windows package test 必须检查 native Process ExitCode，不只看 PowerShell `$?`。
 
-## 13. Security regression
+## 13. Security / privacy regression
 
-普通日志不得包含：api_id/api_hash、phone/OTP/2FA、Session/credentials、IPC secret、access_hash/file_reference、message body/caption/URL text/media filename。
+普通日志不得包含：api_id/api_hash、phone/OTP/2FA、Session/credentials、IPC secret、access_hash/file_reference、message body/caption/URL text/media filename、send/forward dry-run body。
 
-用户明确调用 history/search/get 时正文可在 stdout JSON/JSONL，但不能进入 app.log。写操作 body 不进 caplog。
+用户明确调用 history/search/get 时正文可在 stdout JSON/JSONL，但不能进入 app.log。代理只允许记录脱敏后的类型/endpoint；带认证信息的 proxy URL 不得记录用户名、密码、query。
+
+真实日志审计只报告匹配计数，禁止把日志正文复制到 Issue/PR/聊天。
+
+正常 GUI 关闭的新日志段还必须满足：
+
+```text
+Fatal application error = 0
+Traceback = 0
+un-awaited coroutine = 0
+Task was destroyed = 0
+SESSION_BUSY caused by same-generation GUI/tgctl = 0
+```
 
 ## 14. FloodWait
 
 Mock → `FLOOD_WAIT + retry_after_seconds`，不 retry storm。真人测试不故意制造 FloodWait。
 
-## 15. v0.3 真人 E2E
+## 15. v0.3.1 真人只读 E2E
 
 默认不执行 send/forward/mark-read/media confirm download。用户本机验证：
 
-1. dialogs 覆盖 group/supergroup/channel/private/bot/Saved/archive；
-2. Chat Folder membership；
-3. 真实聊天最近 500 history；
-4. owner/admin；
-5. sender-id/current role/domain filter；
-6. anonymous admin/send-as 不误归属；
-7. history/search 多页无重复/遗漏；
-8. since/until；
-9. Saved Messages history/search；
-10. MESSAGE_NOT_FOUND；
-11. AMBIGUOUS_CHAT；
-12. v0.3 GUI + tgctl coexist；
-13. legacy direct lock → packaged `SESSION_BUSY` + exit8；
-14. GUI legacy-lock safe diagnostic，无 `database is locked`；
-15. logs/stdout safety；
-16. Forum 若账号有条件；
-17. media metadata-only 不生成文件；
-18. media plan 第一次不生成目录/文件；
-19. **current-unread real scenario**：刷新 catalogue 后等待/制造时间差，再开始导出，确认该群开始时的新 unread 被包含；开始后才到的消息留到下一次。
+1. `account get`；
+2. dialogs 覆盖 group/supergroup/channel/private/bot/Saved/archive；
+3. `chats get`、members admin/owner；
+4. 最近 500 history；
+5. search contains/url-domain/sender/sender-role 以及可用的 regex 能力；
+6. two-page cursor no overlap，跨查询 → `INVALID_CURSOR`；
+7. since/until 时区边界；
+8. Saved Messages `me`；
+9. replies/entities/forward_origin/reactions/service_action/media metadata；
+10. Forum topics/history，非 forum → `NOT_A_FORUM`；
+11. `MESSAGE_NOT_FOUND`、`AMBIGUOUS_CHAT`；
+12. media plan → `DOWNLOAD_CONFIRMATION_REQUIRED`，不确认下载；
+13. send/forward only `--dry-run`；
+14. GUI + tgctl coexist；
+15. two GUI + tgctl coexist；
+16. 0 条 current-unread export 生成合法 JSON且 mark-read disabled；
+17. normal reads do not download media；
+18. idle GUI close；
+19. refresh groups then close；
+20. zero-unread export then close；
+21. two GUIs sequential close；
+22. each close 后 `tgctl status` still works；
+23. normal-close log counts all zero as above；
+24. same bounded sender sample before/after unknown classification statistics；
+25. privacy log scan reports counts only。
 
-Option-B real read-ack 或 media confirm 只有用户明确选择安全目标时才测。
+真实账号测试默认只读；任何 real send/forward/read-ack/media download/group mutation/FloodWait stress/Session reset 都需要用户单独确认。
 
 ## 16. Candidate / Release gate
 
-记录 branch/runtime head、pytest 数量、Windows run、artifact、one-file/portable/tgctl SHA-256、CI 无法验证的真实 Telegram 项。
+记录 branch/runtime head、final PR head、pytest 数量、Windows run、artifact、one-file/portable/tgctl SHA-256、CI 无法验证的真实 Telegram 项。
 
-Candidate 完成后停止：**不 merge PR #20、不创建 v0.3.0 Release**，等待用户真人验收与明确发布授权。
+v0.3.1 Candidate 完成后：
+
+- PR 在真人验收前保持 Draft；
+- 不修改 `v0.3.0` tag/Release；
+- 不创建 `v0.3.1` Release；
+- 等待真人 E2E PASS 与用户明确 merge/release 授权。
