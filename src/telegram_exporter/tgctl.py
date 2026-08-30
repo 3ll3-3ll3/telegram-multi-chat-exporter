@@ -118,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     search = messages_sub.add_parser("search")
     search.add_argument("--chat")
     search.add_argument("--contains")
+    search.add_argument("--regex", help="Python regex，本地 bounded filter；默认忽略大小写")
     search.add_argument("--sender-id", type=int)
     search.add_argument("--sender-role", choices=["owner", "admin", "member"])
     search.add_argument("--since")
@@ -320,6 +321,7 @@ def emit(payload: dict[str, Any], json_mode: bool, jsonl_mode: bool = False) -> 
 def _advanced_search_requested(args: argparse.Namespace) -> bool:
     return any(
         (
+            args.regex is not None,
             args.sender_id is not None,
             args.sender_role is not None,
             args.message_type is not None,
@@ -406,6 +408,7 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
                     "schema": "v3",
                     "chat": args.chat,
                     "contains": args.contains,
+                    "regex": args.regex,
                     "sender_id": args.sender_id,
                     "sender_role": args.sender_role,
                     "since": since.isoformat() if since else None,
