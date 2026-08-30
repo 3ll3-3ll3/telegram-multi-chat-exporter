@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
+
 from telegram_exporter import reader_search as search_module
+from telegram_exporter.bridge_errors import CURSOR_STALE, TelegramBridgeError
 from telegram_exporter.cursor_codec import CursorCodec
 from telegram_exporter.reader_models import DialogInfo, MessageInfoV3, SenderInfo
 from telegram_exporter.reader_search import search_messages_page
@@ -128,3 +131,23 @@ def test_global_search_cursor_resumes_legacy_segment_without_duplicate(monkeypat
         search_messages_page(reader, chat=None, contains="pikpak", limit=1, cursor=first.next_cursor)
     )
     assert [(row.source_chat_id, row.message_id) for row in second.items] == [(LEGACY_ID, 4)]
+
+
+def test_single_chat_legacy_cursor_becomes_stale_if_migration_relation_disappears(monkeypatch) -> None:
+    monkeypatch.setattr(search_module, "Message", SearchMessage)
+    reader = MigratedSearchReader()
+    first = asyncio.run(search_messages_page(reader, chat=CURRENT_ID, contains="pikpak", limit=1))
+    assert first.next_cursor
+    reader.row.migrated_from_chat_id = None
+
+    with pytest.raises(TelegramBridgeError) as caught:
+        asyncio.run(
+            search_messages_page(
+                reader,
+                chat=CURRENT_ID,
+                contains="pikpak",
+                limit=1,
+                cursor=first.next_cursor,
+            )
+        )
+    assert caught.value.code == CURSOR_STALE
