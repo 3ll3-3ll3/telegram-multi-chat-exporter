@@ -7,18 +7,18 @@
 # Current Project State
 
 - Repository: `3ll3-3ll3/tg-exporter`
-- Production version: **v0.1.10**
+- Production version: **v0.1.10**（直到正式 v0.3.0 GitHub Release 实际创建并核验前仍以此为准）
 - Production commit/tag: `cedb02035597aa607fac399666154519f480c431` / `v0.1.10`
-- Current development version: **v0.3.0 Candidate**
+- Current development version: **v0.3.0 release candidate**
 - Development branch: `codex/personal-account-reader-v0.3.0`
-- Implementation PR: **#20**, `OPEN + DRAFT`, base `main`
-- Issue #22: **runtime fix completed and Candidate gate passed**; close after final GitHub status sync
-- Frozen runtime Candidate for human E2E: `7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c`
+- Implementation PR: **#20**, base `main`
+- Issue #22: **fixed + closed**
+- Frozen runtime Candidate accepted by user: `7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c`
 - Windows Candidate run: `33296790070 = success`
 - pytest: **95 passed**
 - Candidate artifact: `9727721868`
-- Current task: **用户本机真实 Telegram 账号 E2E，不再添加新功能**
-- Release gate: 不 merge PR #20、不创建/覆盖 `v0.3.0` Release，直到真人 E2E PASS + 用户明确发布授权
+- Human acceptance: **PASS declared by user on 2026-08-30; no new runtime defect reported in that acceptance step**
+- Current task: **formal v0.3.0 release only; do not add new features**
 
 ## Project Summary
 
@@ -39,7 +39,7 @@ TG Exporter / TG 导出器是 Windows 本地 Telegram 工具：
 - 用户本机 `%APPDATA%\TelegramMultiChatExporter\` 下真实 Session/API/settings/checkpoint/log/cache；
 - 用户真实 Telegram 账号和本地导出文件。
 
-正式线 v0.1.10 不受 Candidate 分支影响。
+正式 v0.3.0 Release 实体和资产未核验前，不得把 Production 从 v0.1.10 改成 v0.3.0。
 
 ## Current Architecture
 
@@ -73,7 +73,7 @@ GUI/tgctl 不得 fallback direct SQLiteSession。`SESSION_BUSY` 只用于 legacy
 
 ### Current unread — Issue #22 fixed semantics
 
-每个群必须在**该群真正开始执行导出时**单独冻结：
+每个群在**该群真正开始执行导出时**单独冻结：
 
 ```text
 lower = read_inbox_max_id_at_group_start
@@ -119,9 +119,7 @@ tgctl media download
 
 Existing `status/chats list/messages search/messages get/forward/send` 继续兼容。send/forward 安全边界继续是 true forward、plain text、dry-run、20/200 cap、AMBIGUOUS_CHAT、FloodWait structured stop、unknown-outcome no retry、no-body logging。
 
-## Pre-Human-E2E Tail Audit / Fixes Completed
-
-此前尾部审计以及 Issue #22 修复已完成：
+## Pre-Release Tail Audit / Fixes Completed
 
 1. Release workflow 恢复 standalone + portable `SESSION_BUSY JSON/native exit=8` gate；
 2. v0.1.10 UTF-8/cp1252 regression 完整前移；
@@ -132,11 +130,11 @@ Existing `status/chats list/messages search/messages get/forward/send` 继续兼
 7. Candidate gate 包含 one-file + portable；
 8. `main@v0.1.10` 已纳入 PR #20 ancestry，PR base=`main`；
 9. Issue #22：current-unread 改为 per-group export-start snapshot，并补回归；
-10. migrated legacy peer 不会污染 current-unread snapshot。
+10. migrated legacy peer 不会污染 current-unread snapshot；
+11. PR #20 无未解决 inline review thread；
+12. `docs/releases/v0.3.0.md` 已从 Candidate Notes 收尾为正式 Release Notes。
 
-## Frozen Human-E2E Candidate
-
-**真人验收现在只使用这一版，不再使用旧 `0ad4219...` Candidate。**
+## Frozen Human-Accepted Candidate
 
 ```text
 runtime candidate head: 7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c
@@ -172,55 +170,36 @@ tgctl.exe
 01e566de4cc95fff273b68e4039b346843e2b3c54ee8f4afb74e9fe7a50189d5
 ```
 
-其后的 docs-only commits 不改变该 frozen binary。
+Candidate Artifact 仅用于发布前验收，不是正式分发物。正式资产必须由 Release workflow 从最终 main commit 重新构建，并以正式 `SHA256SUMS.txt` 为准。
 
-## Human E2E Pending
+## Human Acceptance
 
-用户本机至少验证：
+2026-08-30 用户明确确认第三版验收通过，并要求继续下一步工作。本次确认未报告新的 runtime defect。
 
-1. all dialogs：group/supergroup/channel/private/bot/Saved/archive；
-2. Telegram Chat Folder membership；
-3. 真实聊天最近 500 history；
-4. owner/admin；
-5. sender-id / current sender-role / real domain search；
-6. anonymous admin/send-as 不误归属；
-7. history/search 多页无 overlap/gap；
-8. since/until；
-9. Saved Messages history/search；
-10. `MESSAGE_NOT_FOUND`；
-11. `AMBIGUOUS_CHAT`；
-12. v0.3 GUI + tgctl coexist；
-13. legacy direct Session lock → packaged `SESSION_BUSY` + native exit 8；
-14. logs/stdout safety；
-15. Forum（账号有条件时）；
-16. media metadata-only 不产生文件；
-17. media plan 第一次不创建目录/不下载；
-18. **Issue #22 real scenario**：current-unread 在每个群开始时取新 snapshot，开始后到达的新消息留到下一次；
-19. media confirm / Option B read-ack 仅在用户明确选择安全目标时做副作用测试。
-
-默认不需要重复 send/forward 真人写入；v0.1.9 已在 Saved Messages 验证过真实 write。若 v0.3 要复验，必须先 dry-run + 用户确认。
+项目流程上 human acceptance gate 已满足；仍必须完成：final PR CI → Ready → merge `release: v0.3.0` → formal Release workflow → Release/tag/assets/hash 核验。
 
 ## Known Risks / Technical Debt
 
-- CI/mock 无法代替真实 Telegram E2E；
-- `capture_current_unread_snapshot()` 当前通过 `iter_dialogs()` 精确查 current chat，正确性优先；大量 dialogs + 大批群时可能有 O(groups × dialogs) 延迟，可在 E2E 后评估 targeted API 优化，不应在候选冻结前过度重构；
-- branch protection 当前不是仓库强制，因此 Agent 必须自行遵守 PR/no-force-push/no-release-overwrite；
-- Telegram 权限/历史可见性会因真实账号而异，unavailable 不得伪造。
+- `capture_current_unread_snapshot()` 当前通过 `iter_dialogs()` 精确查 current chat，正确性优先；大量 dialogs + 大批群时可能有 O(groups × dialogs) 延迟，可在 v0.3.0 发布后单独优化，不在本次 Release 临时重构；
+- branch protection 不是 GitHub 强制时，Agent 必须自行遵守 PR/no-force-push/no-release-overwrite；
+- Telegram 权限/历史可见性会因真实账号而异，unavailable 不得伪造；
+- Candidate 与正式 Release 是两次独立构建，正式资产 hash 预期可能与 Candidate 不同。
 
-## Next Steps
+## Current Release Steps
 
 ```text
-用户下载 artifact 9727721868
-→ Windows + 真实 Telegram 账号 E2E
-→ 若发现问题：只修真实问题 + regression + 新 Candidate
-→ E2E PASS
-→ 更新正式 v0.3.0 Release Notes
-→ 用户明确授权“发布 v0.3.0”
-→ merge PR #20 / release workflow
-→ 验证 tag/target/assets/SHA/workflow
+1. final PR #20 head CI PASS
+2. mark PR #20 Ready
+3. merge with commit title/message starting `release: v0.3.0`
+4. wait formal Release workflow
+5. require pytest/import/build/SESSION_BUSY/smoke/assets all PASS
+6. verify GitHub Release `v0.3.0` actually exists
+7. verify tag/target commit and four assets
+8. verify SHA256SUMS.txt / asset digests
+9. only then update HANDOFF production state to v0.3.0
 ```
 
-在真人 E2E 结论出来前：**不继续堆新功能、不 merge PR #20、不 Release。**
+不得覆盖/删除旧 tag 或 Release。若 Release workflow 失败，先修失败，不对外声称已发布。
 
 # New Chat Resume Instructions
 
@@ -229,10 +208,10 @@ tgctl.exe
 1. 读 `AGENTS.md`；
 2. 读本 `HANDOFF.md`；
 3. 读 `docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`、`docs/ARCHITECTURE.md`、`docs/DECISIONS.md`、`docs/TESTING.md`、`SECURITY.md`、`docs/releases/v0.3.0.md`；
-4. 查看 PR #20 当前 head / Draft 状态；
-5. 查看 Issue #22 是否已按本快照关闭；
-6. 核对 Latest Release 仍是 v0.1.10，除非 GitHub 已有更新事实；
-7. 核对 frozen runtime run `33296790070`/artifact `9727721868`；
-8. 在这些核对完成前不要修改代码。
+4. 核对 PR #20 当前状态/head/CI；
+5. 核对 Issue #22 为 closed；
+6. 核对 Latest Release；
+7. 若 v0.3.0 Release 已存在，必须核验 target/assets/SHA 后再把它当 Production；
+8. 在这些核对完成前不要修改新功能。
 
-恢复后先输出：当前 Production、Candidate、真人 E2E 状态、风险、推荐下一步。GitHub 当前事实若与本文件冲突，以 GitHub 为准并更新 HANDOFF。
+恢复后先输出：当前 Production、发布流程状态、风险和下一步。GitHub 当前事实若与本文件冲突，以 GitHub 为准并更新 HANDOFF。
