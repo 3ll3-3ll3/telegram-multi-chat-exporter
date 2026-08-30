@@ -2,7 +2,7 @@ name: Windows EXE
 
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: [main, "codex/**", "hotfix/**"]
   pull_request:
   workflow_dispatch:
 
@@ -41,6 +41,47 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --console --onefile --paths src --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
+
+      - name: Packaged tgctl SESSION_BUSY exit-code contract
+        shell: pwsh
+        run: |
+          $originalAppData = $env:APPDATA
+          $testAppData = Join-Path $env:RUNNER_TEMP "tgctl-session-busy-appdata"
+          $holder = $null
+          try {
+            Remove-Item -Recurse -Force $testAppData -ErrorAction SilentlyContinue
+            $env:APPDATA = $testAppData
+            $appDir = Join-Path $testAppData "TelegramMultiChatExporter"
+            New-Item -ItemType Directory -Force $appDir | Out-Null
+            '{"api_id":12345,"api_hash":"ci-dummy-not-secret"}' | Set-Content -Encoding utf8 -NoNewline (Join-Path $appDir "api_credentials.json")
+
+            $readyFile = Join-Path $env:RUNNER_TEMP "tgctl-session-lock-ready.txt"
+            Remove-Item -Force $readyFile -ErrorAction SilentlyContinue
+            $holder = Start-Process python -ArgumentList @("tests\helpers\hold_session_lock.py", $readyFile) -PassThru -WindowStyle Hidden
+
+            for ($i = 0; $i -lt 50 -and -not (Test-Path $readyFile); $i++) {
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not (Test-Path $readyFile)) {
+              throw "Session lock holder did not become ready"
+            }
+
+            $raw = & .\dist\tgctl\tgctl.exe status --json 2>$null
+            $exitCode = $LASTEXITCODE
+            $payload = $raw | ConvertFrom-Json
+            if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
+              throw "Expected packaged tgctl JSON error SESSION_BUSY; got: $raw"
+            }
+            if ($exitCode -ne 8) {
+              throw "Expected packaged tgctl exit code 8 for SESSION_BUSY; got $exitCode"
+            }
+          }
+          finally {
+            if ($holder -and -not $holder.HasExited) {
+              Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+            }
+            $env:APPDATA = $originalAppData
+          }
 
       - name: Smoke-test packaged EXEs
         shell: pwsh
