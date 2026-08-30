@@ -1,279 +1,211 @@
 # Architecture
 
-## 1. Product boundary
+## 1. Product shape
 
-TG Exporter 包含两个本地入口，但共享同一 Telegram Core：
-
-```text
-Windows GUI exporter
-Codex-callable tgctl CLI
-        ↓
-TelegramService
-        ↓
-Telethon user account
-```
-
-GUI 仍负责多群独立文本导出；v0.1.9 起 `tgctl` 负责手动、确定性的 Telegram 读取/搜索/真正转发/纯文本发送。本版没有 MCP、后台 daemon、长期监听、Bot API、规则引擎或 AI Agent。
-
-GUI 输出仍为：
+v0.3.0 由三个本地角色组成：
 
 ```text
-总输出目录 / 分类 / 群组 / YYYY-MM-DD_HH-mm-ss.json
+TGExporter GUI ─┐
+               ├→ local IPC → TG daemon → TelegramService/Telethon → user account
+tgctl / Codex ─┘
 ```
 
-历史 JSON 不读取、不合并、不回写。
+只有 daemon 持有 `%APPDATA%\TelegramMultiChatExporter\telegram.session`。GUI 仍是可视化导出工具；tgctl 是 Codex 的机器接口；Personal Account Reader 是 daemon-side Core。
 
-## 2. 启动链
+## 2. 进程与生命周期
 
-GUI：
+GUI/tgctl 都通过 `DaemonIPCClient` 调用本机 Named Pipe。Pipe payload 只传 UTF-8 JSON bytes，不传 pickle，不开 TCP/HTTP。
+
+Daemon：
+
+- 单实例 `FileLease`；
+- 唯一 `TelegramService` / `SessionLease`；
+- Windows tray；
+- GUI lease/heartbeat；
+- export job coordinator；
+- operation coordinator；
+- reader RPC；
+- 无活跃 GUI/job/request 后约 10 分钟 idle shutdown；
+- 下次 GUI/tgctl 自动唤醒。
+
+## 3. Session semantics
+
+正常 v0.3：GUI + tgctl 共用 daemon，不应互相 `SESSION_BUSY`。
+
+兼容边界：旧 v0.1.x/direct process 已经 OS-lock Session → daemon `SessionLease` 获取失败 → client 得到 `SESSION_BUSY`。packaged `tgctl` native exit code 必须严格为 8；UTF-8 console fix 防止中文 JSON 输出二次异常覆盖退出码。
+
+## 4. OperationCoordinator
+
+第一版稳定性优先，单 Telegram client 串行协调：
 
 ```text
-launcher.py
-→ telegram_exporter.main
-→ QApplication + qasync.QEventLoop
-→ focused_gui.MainWindow
+LOCAL status/job/heartbeat → 立即
+export → 独占 Telegram work
+reader → export 活跃时等待
+real send/forward → export 活跃时立即 EXPORT_IN_PROGRESS
+media confirmed download → 按 reader 队列等待 export
 ```
 
-CLI：
+write 请求发送后 transport outcome unknown 不自动 retry。
+
+## 5. GUI export pipeline
+
+GUI 仍提交 `GroupExportPlan`，但 Telegram 抓取和 JSON 写入在 daemon 内执行：
 
 ```text
-tgctl_launcher.py / python -m telegram_exporter.tgctl
-→ telegram_exporter.tgctl.main()
-→ asyncio.run()
-→ TelegramService
-```
-
-`tgctl` 不导入 Qt/qasync。CLI 与 GUI 不共享进程事件循环，只共享 Telegram Core、Session、proxy 和数据模型。
-
-## 3. GUI 层
-
-历史继承链仍是：
-
-```text
-gui.py
-→ gui_async.py
-→ focused_gui.py
-```
-
-- `gui.py`：基础连接/导出 GUI；
-- `gui_async.py`：qasync-safe non-blocking dialog；
-- `focused_gui.py`：focused workspace、Telegram Folder、头像、Export Category、Option B、migration UI preference。
-
-禁止在 Telethon 活跃的 async slot 中重新引入 blocking modal nested event loop。
-
-## 4. TelegramService
-
-`telegram_service.py` 是 GUI / tgctl / 未来 MCP 应复用的 Telegram Core。当前职责：
-
-```text
-connect / authorization state
-phone/code/2FA methods（仅 GUI 首次登录使用）
-account_info
-list_groups
-resolve_group
-search_messages
-get_messages
-forward_messages
-send_text_message
-group_avatar_bytes
-close
-```
-
-CLI 不调用 phone/code/2FA 登录方法；它只复用 GUI 已创建的授权 Session。
-
-`list_groups()` 仍负责：
-
-- groups/channels catalogue；
-- Basic Group → Supergroup migration collapse；
-- Dialog Filters / Chat Folder memberships；
-- unread snapshot traits；
-- avatar capability metadata。
-
-因此 tgctl 不维护第二份 chat catalogue 实现。
-
-## 5. Shared Session ownership
-
-兼容 Session base：
-
-```text
-%APPDATA%\TelegramMultiChatExporter\telegram
-```
-
-Telethon 常见文件：`telegram.session`。
-
-v0.1.9 起 `TelegramService.__init__()` 在创建 `TelegramClient` 前获取 `SessionLease`：
-
-```text
-%APPDATA%\TelegramMultiChatExporter\telegram.session.lock
-```
-
-锁使用 OS-level non-blocking file lock。目的不是用 lock file 的“存在性”判断占用，而是依赖 OS 持有的文件锁；崩溃后 OS 自动释放实际锁。
-
-结果：
-
-```text
-GUI owns session → tgctl gets SESSION_BUSY
-tgctl owns session → GUI gets SessionBusyError
-```
-
-`close()` 无论 client 是否已经 connected，都在 finally 释放 SessionLease。
-
-第一版明确不允许两个进程同时打开同一 Telethon SQLiteSession。未来多客户端应改成 single daemon + IPC，而不是绕过 lock。
-
-## 6. Credentials / proxy
-
-本地文件：
-
-```text
-%APPDATA%\TelegramMultiChatExporter\api_credentials.json
-%APPDATA%\TelegramMultiChatExporter\telegram.session
-```
-
-`credentials_store.load_saved_credentials()` 给 CLI 读取已有 API credentials。CLI 缺失/未授权时返回 `NOT_AUTHORIZED`，不做交互式登录。
-
-`proxy.py` 检测 Windows system proxy 并显式传给 Telethon。tgctl 与 GUI 走同一逻辑。
-
-## 7. tgctl command pipeline
-
-```text
-argv
-→ argparse deterministic parser
-→ pre-connect safety validation
-→ open existing authorized TelegramService
-→ service operation
-→ dataclass/dict result
-→ stable JSON envelope or human output
-→ service.close()
-```
-
-JSON success：
-
-```json
-{"ok":true,"data":{}}
-```
-
-JSON failure：
-
-```json
-{"ok":false,"error":{"code":"...","message":"...","details":{}}}
-```
-
-JSON mode stdout 不混入 logging。`setup_logging()` 只写本地 rotating file。
-
-## 8. Chat resolution
-
-`resolve_group()` 接受：
-
-- marked integer chat_id；
-- 精确 `@username`；
-- 精确 title。
-
-同名 title 多个时抛 `AMBIGUOUS_CHAT`，带安全候选：chat_id/title/username/type。禁止 first-match 猜测。
-
-Saved Messages 在 write destination 上使用显式 `me`，不经过 catalogue title resolution。
-
-## 9. Message reads
-
-`search_messages()`：
-
-- current logical chat only；
-- deterministic `contains / since / until / limit / case_sensitive`；
-- `since` inclusive、`until` exclusive；
-- text/caption only；
-- 不下载媒体；
-- 返回 chat id/title、message id、date、sender label、text。
-
-`get_messages()`：按 ids 精确取消息；任一缺失返回 `MESSAGE_NOT_FOUND` + missing ids。
-
-CLI 第一版不做 migrated legacy + current 的跨 peer 搜索；GUI date-range historical stitching 继续保留且不受影响。tgctl catalogue 仍隐藏 legacy duplicate。
-
-## 10. Write operations
-
-### forward
-
-`forward_messages()` 预取 ids 做安全检查，然后调用 Telethon `client.forward_messages(...)`。不是复制正文重新 send。
-
-第一版只让纯文本/普通网页 preview 进入 true forward；照片/视频/文件/语音等媒体消息作为 `failed_ids`，避免本版偷偷扩成媒体转发器。
-
-### send
-
-`send_text_message()` 使用：
-
-```text
-parse_mode=None
-link_preview=False
-```
-
-只做纯文本。
-
-### dry-run
-
-forward/send dry-run 完成相同的 chat resolution / id preflight，但不调用 Telegram write method。
-
-CLI 层 forward 有两级批量闸门：默认 20，显式 `--allow-large-batch` 后 200 hard cap。
-
-FloodWait 向上返回给 CLI 映射为结构化错误；不做 retry loop。
-
-## 11. GUI export pipeline
-
-原有行为不变：
-
-```text
-GroupExportPlan
-→ current entity
-→ optional legacy entity for DATE_RANGE
-→ text/caption collection
-→ Desktop-style serializer
+GUI plan
+→ export.batch.start RPC
+→ daemon ExportCoordinator
+→ Telegram
+→ serializer
 → output/category/group/timestamp.json
-→ atomic tmp -> replace
+→ atomic replace
 → checkpoint
-→ optional Option B read ack
+→ optional read ack
 ```
 
-current unread 使用 frozen snapshot；since-last checkpoint 单调不减。
+正文不需要为批量导出跨 Named Pipe 来回搬运。关闭/崩溃 GUI 后 daemon job 可继续；GUI 重开读取安全 job metadata。
 
-## 12. Local storage / logging
+## 6. Reader 模型隔离
+
+GUI `GroupInfo` 保持导出器语义。全账号 reader 使用独立模型：
 
 ```text
-%APPDATA%\TelegramMultiChatExporter\
-├─ api_credentials.json
-├─ telegram.session
-├─ telegram.session.lock
-├─ local_state.json
-├─ settings.json
-├─ logs\app.log
-└─ cache\avatars\
+AccountProfile
+DialogInfo
+ChatDetails
+ParticipantInfo
+SenderInfo
+MessageInfoV3
+ForumTopicInfo
+MediaMetadata
+Page
 ```
 
-日志可记录阶段、proxy safe label、api_id、chat/message id、数量、write success/failure。
+因此 private/bot/Saved Messages 不会破坏 GUI 群组工作区假设。
 
-日志禁止：api_hash、phone、OTP、2FA、Session contents、chat message body、avatar bytes。
-
-`messages search/get` 的正文只在命令明确请求的 stdout 数据中出现，不写普通日志。
-
-## 13. Packaging
-
-v0.1.9 Release：
+## 7. Reader service layering
 
 ```text
-TGExporter-vX.Y.Z-windows-x64.exe
-TGExporter-vX.Y.Z-windows-x64-portable.zip
-  └─ TGExporter/TGExporter.exe + tgctl.exe
+TelegramService
+  └─ Telethon client / Session / proxy
+
+PersonalAccountReader
+  ├─ account
+  ├─ dialogs
+  ├─ dialog resolution
+  ├─ members/role snapshot
+  ├─ chat details
+  └─ rich history/get
+
+PersonalAccountReaderV3
+  └─ logical-chat identity fixes，例如 legacy history 仍按 current supergroup role snapshot
+
+reader_search.py
+reader_topics.py
+reader_media.py
+reader_rpc.py
+```
+
+Daemon v3 server subclass在保留 v2 auth/export/write safety 的同时增加 reader methods。
+
+## 8. Dialog completeness
+
+`dialogs.list` 与 GUI `chats.catalogue` 分开。
+
+Reader dialog types：group/supergroup/channel/private/bot/saved。包含 archive/forum/unread/pinned/muted/folder/migration safe metadata。
+
+为避免 Telegram activity order 在翻页时被新消息重排，完整目录默认每次构建当前 catalogue 后按 canonical key 稳定排序，并用 HMAC cursor 续页。
+
+Saved Messages 若未自然作为 dialog 返回，则合成唯一 self row `reference=me`，不重复 self private row。
+
+## 9. Cursor
+
+`CursorCodec`：
+
+- base64url body.signature；
+- HMAC-SHA256；
+- version + method + query fingerprint + safe position；
+- 不包含 access_hash/file_reference；
+- query mismatch/tamper → `INVALID_CURSOR`；
+- Telegram entity offset 无法恢复 → `CURSOR_STALE`。
+
+默认 page 100，max 500。
+
+## 10. Members / roles
+
+群/频道 participant 使用 Telegram participant APIs；Basic Group 使用 full chat participants。role cache 为短 TTL 内存 cache，不持久化成员正文。
+
+`owner/admin/member` 是 current snapshot。匿名管理员/send-as 只表达 Telegram 可证明的身份，不根据显示名推断隐藏 user。
+
+## 11. MessageInfoV3
+
+统一 schema 包括安全可得的：chat/source chat/message id、date/edit date、structured sender、text/caption、entities、reply、forum topic、forward origin、grouped id、views/forwards、reactions、poll、service action、pinned、media metadata、availability。
+
+Media 默认 metadata-only，不下载 `file_reference`。
+
+Migration history：current segment → legacy segment；唯一定位键 `(source_chat_id,message_id)`。
+
+## 12. Search
+
+Advanced search 先服务器/会话范围缩小候选，再 bounded local filters。支持 single/global、contains、sender id/current role、time、message type、topic、link、URL domain。
+
+每次候选扫描有 cap；达到 cap 后通过 cursor 续跑，不无限扫描。URL domain 使用 URL parsing/hostname normalization，不访问网络目标 URL。
+
+## 13. Forum
+
+Forum topic list 使用 Telethon 1.44 `functions.messages.GetForumTopicsRequest(peer=...)`。Topic history 复用 rich history 并以 topic id 约束。非 forum → `NOT_A_FORUM`。
+
+## 14. Explicit media download
+
+普通 history/search/get 不下载。
+
+`media.download`：
+
+```text
+RPC 1: resolve + metadata plan
+→ DOWNLOAD_CONFIRMATION_REQUIRED + token
+→ no output dir / no bytes written
+
+RPC 2: same chat/ids/output + confirm token
+→ validate HMAC/query/plan digest/TTL
+→ enforce 20/500MiB or explicit large 200/5GiB
+→ download to safe *.part
+→ actual-byte hard cap
+→ os.replace to final file
+```
+
+文件名只取 basename 并过滤 Windows/path traversal 字符。confirmed call 在 IPC 中标记为 side effect，transport 中断不自动 retry。
+
+## 15. JSON / JSONL
+
+Daemon IPC 始终 bounded JSON frame。JSONL 不把 Pipe 变成无限 stream：daemon 返回最多 500 条 page，tgctl 再输出 meta/item/end 行。
+
+## 16. Logging / secrets
+
+AppData 兼容目录继续：
+
+```text
+api_credentials.json
+telegram.session
+telegram.session.lock
+settings.json
+local_state.json
+logs/app.log
+cache/avatars/
+```
+
+禁止 stdout/log/cursor：api_id/api_hash、phone、OTP/2FA、Session、credentials 原文、access_hash、file_reference、IPC secret。消息正文只可在用户明确 reader stdout 中返回，普通 log 不记录正文/caption/URL text/media filename。
+
+## 17. Packaging
+
+Candidate CI 构建：
+
+```text
+TGExporter.exe
 tgctl.exe
-SHA256SUMS.txt
 ```
 
-CI 对 GUI 与 tgctl 都执行 PyInstaller packaged smoke-test。
+两个 one-file 可作为 daemon worker 自启动。CI 必须跑 pytest、import、两个 PyInstaller、packaged `SESSION_BUSY exit 8` regression、packaged smoke，并上传 candidate artifact。
 
-## 14. Future MCP direction
-
-推荐：
-
-```text
-single local Telegram daemon owns Session
-├─ GUI IPC client
-├─ tgctl IPC client
-└─ MCP IPC client
-```
-
-需要新增 IPC protocol、daemon lifecycle/crash recovery、本机客户端鉴权、MCP tool schema 与 write confirmation policy。本版不实现这些。
+正式 Release packaging 只有用户验收后才进行；v0.3 candidate 不自动发布。
