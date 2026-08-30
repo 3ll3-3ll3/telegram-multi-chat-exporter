@@ -82,6 +82,7 @@ async def dispatch_reader(server: Any, method: str, params: dict[str, Any]) -> A
                 reader,
                 chat=params.get("chat"),
                 contains=params.get("contains"),
+                regex=params.get("regex"),
                 sender_id=int(sender_id) if sender_id is not None else None,
                 sender_role=params.get("sender_role"),
                 since=_parse_iso(params.get("since")),

@@ -1,16 +1,57 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
+from telethon.errors import RPCError
+from telethon.tl import functions, types
 from telethon.tl.custom.message import Message
 
 from .bridge_errors import INVALID_ARGUMENT, MESSAGE_NOT_FOUND, TelegramBridgeError
-from .reader_models import DialogInfo, MessageInfoV3, ParticipantInfo
-from .reader_service import PersonalAccountReader, _safe_peer_id
+from .reader_models import ChatDetails, DialogInfo, MessageInfoV3, ParticipantInfo, SenderInfo
+from .reader_service import (
+    MAX_PAGE_LIMIT,
+    PersonalAccountReader,
+    _display_name,
+    _participant_info,
+    _participant_user_id,
+    _safe_peer_id,
+)
+
+
+def _peer_kind(value: Any) -> str | None:
+    name = type(value).__name__ if value is not None else ""
+    if name in {"User", "PeerUser"}:
+        return "user"
+    if name in {"Channel", "PeerChannel"}:
+        return "channel"
+    if name in {"Chat", "PeerChat"}:
+        return "chat"
+    return None
+
+
+def _owner_rpc_visibility(error_name: str) -> str:
+    if error_name in {
+        "ChatAdminRequiredError",
+        "AdminRightsRequiredError",
+        "UserAdminInvalidError",
+    }:
+        return "insufficient_permissions"
+    if error_name in {
+        "ChannelPrivateError",
+        "ChatForbiddenError",
+        "UserNotParticipantError",
+    }:
+        return "participants_unavailable"
+    return "telegram_not_returned"
 
 
 class PersonalAccountReaderV3(PersonalAccountReader):
-    """Production reader with logical-chat identity fixes layered on core tests."""
+    """Production reader with v0.3.x logical identity and sender fixes."""
+
+    def __init__(self, telegram_service: Any, **kwargs: Any):
+        super().__init__(telegram_service, **kwargs)
+        self._owner_visibility_hint: dict[int, str] = {}
 
     async def _admin_snapshot(
         self,
@@ -19,26 +60,223 @@ class PersonalAccountReaderV3(PersonalAccountReader):
     ) -> tuple[dict[int, ParticipantInfo], bool]:
         # Historical messages may come from a legacy Basic Group while the
         # logical chat is the current Supergroup. Current owner/admin role must
-        # always be evaluated on the current logical entity, never by passing a
-        # legacy Chat into channels.getParticipants.
+        # always be evaluated on the current logical entity, then delegate to
+        # the established base snapshot contract.
         if row.dialog_type in {"group", "supergroup", "channel"}:
             source_id = _safe_peer_id(entity)
             if source_id is not None and source_id != row.chat_id:
                 try:
                     entity = await self.client.get_entity(row.chat_id)
                 except Exception:
+                    self._owner_visibility_hint[row.chat_id] = "participants_unavailable"
                     return {}, False
-        return await super()._admin_snapshot(row, entity)
+
+        snapshot, available = await super()._admin_snapshot(row, entity)
+        if any(item.is_creator for item in snapshot.values()):
+            self._owner_visibility_hint[row.chat_id] = "available"
+        elif not available:
+            self._owner_visibility_hint[row.chat_id] = "participants_unavailable"
+        elif row.dialog_type == "group":
+            # Basic-group GetFullChat returns the complete visible participant
+            # structure in one response, so a complete list with no creator is
+            # a meaningful not-found result rather than a pagination ambiguity.
+            self._owner_visibility_hint[row.chat_id] = "not_found"
+        else:
+            self._owner_visibility_hint[row.chat_id] = "telegram_not_returned"
+        return snapshot, available
+
+    async def _diagnose_owner_visibility(self, row: DialogInfo, entity: Any) -> str:
+        """Explain an absent owner without guessing from names or message text.
+
+        This probe is only used by ``chats get`` when the normal current admin
+        snapshot contains no creator. It is bounded and read-only, so message
+        history/search do not pay for a duplicate participant scan.
+        """
+
+        try:
+            if row.dialog_type == "group":
+                participants, _ = await self._basic_chat_participants(entity)
+                return "available" if any(item.is_creator for item in participants) else "not_found"
+            if row.dialog_type not in {"supergroup", "channel"}:
+                return "not_applicable"
+
+            offset = 0
+            scanned = 0
+            complete = False
+            while scanned < MAX_PAGE_LIMIT:
+                request_limit = min(100, MAX_PAGE_LIMIT - scanned)
+                result = await self.client(
+                    functions.channels.GetParticipantsRequest(
+                        channel=entity,
+                        filter=types.ChannelParticipantsAdmins(),
+                        offset=offset,
+                        limit=request_limit,
+                        hash=0,
+                    )
+                )
+                participants = list(getattr(result, "participants", None) or ())
+                users = {
+                    int(getattr(user, "id", 0) or 0): user
+                    for user in getattr(result, "users", None) or ()
+                }
+                if not participants:
+                    complete = True
+                    break
+                for participant in participants:
+                    user_id = _participant_user_id(participant)
+                    user = users.get(int(user_id or 0))
+                    if user is not None and _participant_info(user, participant).is_creator:
+                        return "available"
+                offset += len(participants)
+                scanned += len(participants)
+                if len(participants) < request_limit:
+                    complete = True
+                    break
+            if not complete and scanned >= MAX_PAGE_LIMIT:
+                return "creator_not_in_returned_page"
+            return "telegram_not_returned"
+        except RPCError as exc:
+            return _owner_rpc_visibility(type(exc).__name__)
+
+    async def chat_details(self, chat: str | int) -> ChatDetails:
+        details = await super().chat_details(chat)
+        if details.owner is not None or details.chat_type not in {"group", "supergroup", "channel"}:
+            return details
+        try:
+            row, entity = await self.resolve_dialog(details.chat_id)
+            visibility = await self._diagnose_owner_visibility(row, entity)
+        except TelegramBridgeError:
+            visibility = self._owner_visibility_hint.get(details.chat_id, "telegram_not_returned")
+        self._owner_visibility_hint[details.chat_id] = visibility
+        return replace(details, owner_visibility=visibility)
+
+    async def _sender_info(
+        self,
+        logical_row: DialogInfo,
+        message: Any,
+        role_snapshot: dict[int, ParticipantInfo],
+        role_available: bool,
+    ) -> SenderInfo:
+        sender = getattr(message, "sender", None)
+        raw_from = getattr(message, "from_id", None)
+        sender_chat = getattr(message, "sender_chat", None)
+        raw_sender_peer = sender_chat or raw_from
+        sender_id_property = getattr(message, "sender_id", None)
+
+        if sender is None and sender_chat is not None:
+            sender = sender_chat
+        if sender is None:
+            try:
+                sender = await message.get_sender()
+            except Exception:
+                sender = None
+
+        raw_kind = _peer_kind(raw_sender_peer)
+        if sender is None and raw_sender_peer is not None and raw_kind in {"chat", "channel"}:
+            # send-as and anonymous-admin peers often have a reliable raw peer
+            # even when Telethon did not hydrate ``message.sender``. Resolve the
+            # chat/channel entity only for display metadata; identity itself is
+            # already established by Telegram's raw peer.
+            try:
+                sender = await self.client.get_entity(raw_sender_peer)
+            except Exception:
+                sender = None
+
+        sender_kind = _peer_kind(sender) or raw_kind
+        sender_id = _safe_peer_id(sender)
+        if sender_id is None:
+            sender_id = _safe_peer_id(raw_sender_peer)
+        if sender_id is None and isinstance(sender_id_property, int) and sender_id_property:
+            sender_id = int(sender_id_property)
+            if sender_kind is None:
+                sender_kind = "user" if sender_id > 0 else None
+
+        # Broadcast channel posts commonly omit from_id. Telethon may still
+        # expose a negative sender_id property, so the peer_id check must run
+        # even when sender_id is already populated. The raw peer establishes
+        # that the actual poster is the channel rather than an unknown user.
+        if raw_from is None and logical_row.dialog_type == "channel":
+            peer_id = _safe_peer_id(getattr(message, "peer_id", None))
+            if peer_id == logical_row.chat_id and (sender_id is None or sender_id == peer_id):
+                sender_id = peer_id
+                sender_kind = "channel"
+
+        posted_as = sender_id if sender_kind in {"chat", "channel"} else None
+        anonymous = bool(
+            posted_as is not None
+            and logical_row.dialog_type in {"group", "supergroup"}
+            and posted_as == logical_row.chat_id
+        )
+
+        if anonymous:
+            sender_type = "anonymous_admin"
+        elif sender_kind == "user":
+            sender_type = "user"
+        elif sender_kind == "channel":
+            sender_type = "channel"
+        elif sender_kind == "chat":
+            sender_type = "chat"
+        else:
+            sender_type = "unknown"
+
+        role = role_snapshot.get(int(sender_id or 0)) if sender_type == "user" and sender_id is not None else None
+        post_author = getattr(message, "post_author", None)
+        display_name = _display_name(sender)
+        if display_name is None and posted_as == logical_row.chat_id:
+            display_name = logical_row.title
+
+        unknown_reason = None
+        if sender_type == "unknown":
+            action = getattr(message, "action", None)
+            if action is not None and type(action).__name__ != "MessageActionEmpty":
+                unknown_reason = "service_message_without_sender"
+            elif getattr(message, "fwd_from", None) is not None:
+                unknown_reason = "forwarded_message_without_actual_sender"
+            elif isinstance(post_author, str) and post_author:
+                unknown_reason = "post_author_without_sender_peer"
+            elif raw_sender_peer is not None:
+                unknown_reason = "unsupported_or_unavailable_sender_peer"
+            else:
+                unknown_reason = "telegram_sender_not_provided"
+
+        if sender_type == "user":
+            role_basis = "current_snapshot" if role_available else "unavailable"
+            is_creator = role.is_creator if role is not None else (False if role_available else None)
+            is_admin = role.is_admin if role is not None else (False if role_available else None)
+            admin_title = role.admin_title if role is not None else None
+        elif anonymous:
+            role_basis = "telegram_anonymous_admin"
+            is_creator = None
+            is_admin = True
+            admin_title = str(post_author) if isinstance(post_author, str) and post_author else None
+        elif sender_type in {"chat", "channel"}:
+            role_basis = "telegram_sender_peer"
+            is_creator = None
+            is_admin = None
+            admin_title = None
+        else:
+            role_basis = "telegram_message_fields"
+            is_creator = None
+            is_admin = None
+            admin_title = None
+
+        return SenderInfo(
+            sender_id=sender_id,
+            sender_type=sender_type,
+            display_name=display_name,
+            username=getattr(sender, "username", None),
+            posted_as_chat_id=posted_as,
+            is_creator=is_creator,
+            is_admin=is_admin,
+            admin_title=admin_title,
+            anonymous_admin=anonymous,
+            via_bot_id=(int(getattr(message, "via_bot_id", 0) or 0) or None),
+            role_basis=role_basis,
+            unknown_reason=unknown_reason,
+        )
 
     async def messages_get_v3(self, chat: str | int, ids: list[int]) -> list[MessageInfoV3]:
-        """Fetch exact messages while preserving logical/current migration identity.
-
-        When callers use a history row's ``source_chat_id`` for a legacy Basic
-        Group, Telegram must read the message from that legacy peer, but the rich
-        schema should still expose the current Supergroup as ``chat_id`` and the
-        legacy peer as ``source_chat_id``. This keeps get/history/search mutually
-        consistent and avoids message-id ambiguity across migration segments.
-        """
+        """Fetch exact messages while preserving logical/current migration identity."""
 
         requested = tuple(dict.fromkeys(int(value) for value in ids))
         if not requested:
@@ -51,8 +289,6 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             try:
                 logical_row, _ = await self.resolve_dialog(source_row.migrated_to_chat_id)
             except TelegramBridgeError:
-                # If Telegram no longer resolves the current side, retain the
-                # source row rather than guessing a logical identity.
                 logical_row = source_row
 
         messages = await self.client.get_messages(source_entity, ids=list(requested))

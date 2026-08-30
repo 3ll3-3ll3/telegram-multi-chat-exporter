@@ -1,4 +1,4 @@
-# Codex + tgctl — v0.3 Personal Account Reader
+# Codex + tgctl — v0.3.x Personal Account Reader
 
 ## 1. 架构
 
@@ -11,7 +11,7 @@
 → Telegram
 ```
 
-v0.3 不使用 Bot API，不复制 Session，不在 tgctl 重新做 phone/OTP/2FA 登录。登录仍只在 TG Exporter GUI。
+v0.3.x 不使用 Bot API，不复制 Session，不在 tgctl 重新做 phone/OTP/2FA 登录。登录仍只在 TG Exporter GUI。
 
 正常情况下 GUI 和 tgctl 可以同时存在；只有旧 direct-session 进程已经锁住 Session 时才返回 `SESSION_BUSY`，packaged native exit code 必须是 8。
 
@@ -72,6 +72,8 @@ tgctl chats members --chat <ref> --role admin --limit 100 --jsonl
 
 owner/admin/member 来自 Telegram participant/admin data，不通过显示名猜。角色语义是**查询时 current snapshot**，不是历史管理员任期。
 
+v0.3.1 在 owner 缺失时把 `owner_visibility` 细分为可解释状态，包括 `available`、`insufficient_permissions`、`participants_unavailable`、`creator_not_in_returned_page`、`telegram_not_returned` 和数据真正支持时的 `not_found`，不再把不同原因都压成 `not_found`。
+
 ## 6. Message history
 
 ```powershell
@@ -106,15 +108,20 @@ tgctl messages get --chat <ref> --ids 123 --legacy-schema --json
 
 ```powershell
 tgctl messages search --chat <ref> --contains "pikpak" --limit 500 --json
+tgctl messages search --chat <ref> --regex "release-\d+" --json
 tgctl messages search --chat <ref> --sender-role admin --contains "pikpak" --json
 tgctl messages search --chat <ref> --sender-id 123456 --since 2026-08-01 --json
 tgctl messages search --chat <ref> --url-domain mypikpak.com --json
 tgctl messages search --contains "预推免" --limit 100 --jsonl
 ```
 
-支持 single/global、contains、sender-id、sender-role、since/until、message-type、topic、has-link、url-domain、cursor、limit。
+支持 single/global、contains、regex、sender-id、sender-role、since/until、message-type、topic、has-link、url-domain、cursor、limit。
+
+`--regex` 是 Python regex 的本地 bounded filter。默认忽略大小写，`--case-sensitive` 同时控制 contains/regex 的大小写语义。空、非法或超过 512 字符的 regex 返回 `INVALID_ARGUMENT`，并且在 Telegram 请求开始前失败。regex 与 case-sensitive 状态属于 cursor query fingerprint；换 regex 后继续使用旧 cursor 返回 `INVALID_CURSOR`。regex 可与其他筛选组合；legacy schema 不支持 regex。
 
 `--url-domain` 解析真实 hostname；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`。不会访问 URL 或 follow redirect。
+
+v0.3.1 的 hostname/IDNA 规范化完全离线，不依赖网络或公共后缀数据；裸域名、完整 URL、大小写和首尾空格会规范到稳定 hostname。非法域名返回 `INVALID_ARGUMENT`，不会退化成 `TELEGRAM_ERROR`。规范值参与 cursor query fingerprint，因此等价写法可续页，不同域名的 cursor 返回 `INVALID_CURSOR`。
 
 全局搜索为 bounded candidate scan；不会为了凑满 limit 无限扫整个账号。返回 `scanned_count/matched_count/next_cursor/has_more/timing`。
 
@@ -134,9 +141,24 @@ admin_title
 anonymous_admin
 via_bot_id
 role_basis
+unknown_reason
 ```
 
-匿名管理员/send-as 不反推隐藏的具体 user id。
+v0.3.1 只根据 Telegram 提供的 sender 信息判断身份：`sender`、`from_id`、`peer_id`、`sender_id`、`sender_chat`、`post_author`、`via_bot_id` 等。不得根据正文、链接、群名或昵称猜用户名/身份。
+
+可确定时会恢复 user/chat/channel、broadcast channel post、send-as、anonymous admin 等类型；匿名管理员/send-as 不反推隐藏的具体 user id。
+
+Telegram 没有提供足够身份时继续返回 `sender_type=unknown`，并给出例如：
+
+```text
+service_message_without_sender
+forwarded_message_without_actual_sender
+post_author_without_sender_peer
+unsupported_or_unavailable_sender_peer
+telegram_sender_not_provided
+```
+
+`forward_origin` 与实际 `sender` 始终分开。转发来源不能冒充实际发送者。
 
 ## 10. Forum
 
@@ -222,36 +244,41 @@ Reader 扩展没有扩大 send/forward 授权。
 
 严禁输出：api_id/api_hash、phone、OTP、2FA、Session、credentials 原文、access_hash、file_reference、IPC secret。
 
+正常 GUI 关闭不得产生 `Fatal application error`、`Traceback`、未等待协程或 `Task was destroyed`；真正异常仍应保留错误日志。
+
 ## 15. 推荐 Codex 指令
 
 > 使用 tgctl，只读列出我 Telegram 的所有会话类型，分页直到 `has_more=false`，不要执行任何写操作或媒体下载。
 
-> 找到 Svip，读取最近 500 条，列出当前 owner/admin，并告诉我哪些包含 pikpak；再用 `--url-domain mypikpak.com` 判断真正域名链接由谁发送。
+> 找到目标聊天，读取最近 500 条并列出当前 owner/admin；再用 `--url-domain <domain>` 与 `--regex <pattern>` 做 bounded 搜索。只依据结构化 sender/forward 字段，不根据正文猜身份。
 
 > 搜索 Saved Messages 中最近一个月包含“保研”的内容，只读，不标已读。
 
 > 读取这个 Forum 的 topic 列表并总结指定 topic，不下载媒体。
 
-## 16. v0.3 真人只读 E2E
+## 16. v0.3.1 真人只读 E2E
 
-Candidate 发布前/用户本机验收应验证：
+v0.3.1 Candidate 合并/发布前用户本机至少验证：
 
-1. all dialog types，包括 private/bot/Saved/archive；
-2. Svip 最近 500 history；
-3. owner/admin；
-4. pikpak 与真实 mypikpak.com sender；
-5. structured sender / anonymous admin；
-6. history 连续分页无重复/遗漏；
+1. account get 与 all dialog types，包括 private/bot/Saved/archive；
+2. chats get、owner/admin；
+3. 最近 500 history；
+4. contains/regex/url-domain/sender-id/current sender-role；
+5. structured sender / anonymous admin/send-as/unknown_reason；
+6. history/search 连续分页无重复，cursor 跨查询 → `INVALID_CURSOR`；
 7. since/until；
 8. Saved Messages；
 9. MESSAGE_NOT_FOUND；
 10. AMBIGUOUS_CHAT；
-11. v0.3 GUI + tgctl coexist；
-12. legacy Session lock → SESSION_BUSY exit 8；
-13. FloodWait 结构化（不故意制造）；
-14. log/stdout security；
-15. Forum if condition available；
-16. media metadata-only 不产生文件；
-17. media plan 第一次不下载；显式确认下载只在用户主动测试时执行。
+11. NOT_A_FORUM；
+12. media metadata-only 不产生文件；media plan 第一次 `DOWNLOAD_CONFIRMATION_REQUIRED` 且不下载；
+13. send/forward 只做 dry-run；
+14. 单 GUI 空闲关闭、刷新后关闭、0 条 current-unread export 后关闭；
+15. 两个 GUI 依次关闭，随后 `tgctl status` 仍可用；
+16. 正常关闭新日志段中 Fatal/Traceback/un-awaited/Task-destroyed 计数为 0；
+17. sender unknown 同一 bounded 样本做修复前后分类统计；
+18. log/stdout privacy audit 只汇报计数，不输出真实日志正文。
+
+默认不执行真实 send/forward、mark-read、media confirm download、群管理、FloodWait 压测或 Session reset。需要这些写操作必须单独取得用户确认。
 
 Mock/CI 不能代替真实账号 E2E。
