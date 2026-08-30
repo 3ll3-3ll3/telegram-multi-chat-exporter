@@ -17,11 +17,11 @@
 ## D-005：Focused workspace
 **Accepted** — catalogue 与主工作区分离，主表只显示用户选择的工作群。
 
-## D-006：未读使用冻结快照
-**Accepted** — `read_inbox_max_id < id <= latest_message_id_at_refresh`。
+## D-006：current unread 使用每群 export-start 冻结快照
+**Accepted / supersedes old refresh-time wording（Issue #22, 2026-08-30）** — 每个群真正开始执行 current-unread 导出时，单独刷新并冻结 `read_inbox_max_id_at_group_start < id <= latest_message_id_at_group_start`。不得继续使用 catalogue refresh 时的旧 snapshot，也不得移除 upper bound。snapshot 之后到达的新消息不属于本次 run，也不得被本次 optional read-ack 标已读；export 与 read-ack 必须使用同一个 frozen upper。Basic Group→Supergroup 的 current-unread 只使用 current logical Supergroup，legacy peer 仅用于历史兼容。
 
 ## D-007：Option B 已读策略
-**Accepted** — 默认 OFF；JSON success → checkpoint → optional read ack。
+**Accepted** — 默认 OFF；JSON success → checkpoint → optional read ack；read ack 必须使用该群本次 export-start frozen snapshot。
 
 ## D-008：qasync 单事件循环 + 非阻塞 Dialog
 **Accepted** — Qt + Telethon 共享 qasync，不重新引入 nested modal loop。
@@ -63,7 +63,7 @@
 **Accepted（v0.1.9）** — 复用 `%APPDATA%\TelegramMultiChatExporter\api_credentials.json`、`telegram.session` 与 Windows system proxy。未授权返回 `NOT_AUTHORIZED`。
 
 ## D-021：v0.1.9 GUI 与 tgctl 不并发打开同一 SQLiteSession
-**Accepted（v0.1.9 compatibility）** — 使用 OS-level `SessionLease`；不得复制 Session 或绕过锁。v0.2.0 起 Session owner 将迁移到 daemon，但旧 v0.1.9 进程仍受此锁保护。
+**Accepted（v0.1.9 compatibility）** — 使用 OS-level `SessionLease`；不得复制 Session 或绕过锁。v0.2.0 起 Session owner 迁移到 daemon，但旧 v0.1.x direct 进程仍受此锁保护。
 
 ## D-022：tgctl 使用稳定 JSON envelope / error code
 **Accepted（v0.1.9+）** — `{"ok":true,"data":...}` / `{"ok":false,"error":...}` 是 Codex 正式接口，不能要求解析自然语言日志。
@@ -80,8 +80,6 @@
 ## D-026：v0.2.0 采用 single local Telegram daemon
 **Accepted（2026-08-29）**。
 
-迁移目标：
-
 ```text
 TG daemon 唯一持有 TelegramService / Telethon / telegram.session
 ├─ GUI IPC client
@@ -92,103 +90,56 @@ TG daemon 唯一持有 TelegramService / Telethon / telegram.session
 GUI/tgctl 迁移完成后不得直接创建 TelegramClient，也不得在 daemon 不可用时偷偷回退 direct SQLiteSession。
 
 ## D-027：本地 IPC 使用 Windows Named Pipe + JSON bytes
-**Accepted（v0.2.0）**。
-
-优先 `multiprocessing.connection` + `AF_PIPE`；认证使用本地随机 auth secret；传输只用 `send_bytes/recv_bytes` 的 UTF-8 JSON，禁止 pickle object transport。不开 TCP/HTTP/Web Server。
+**Accepted（v0.2.0）** — 优先 `multiprocessing.connection` + `AF_PIPE`；认证使用本地随机 auth secret；传输只用 `send_bytes/recv_bytes` 的 UTF-8 JSON，禁止 pickle object transport。不开 TCP/HTTP/Web Server。
 
 ## D-028：导出是独占 Telegram job；读取等待；真实写入拒绝
-**Accepted（用户体验选择 3B/4B）**。
-
-- export batch 活跃时，`messages.search/get`、`chats.list`、avatar 等 Telegram read 等待 export 完成；
-- daemon/job/status/heartbeat 等纯本地 RPC 始终可用；
-- export 活跃时真正 `send/forward` 立即返回 `EXPORT_IN_PROGRESS`，不得排队后自动发送；
-- dry-run 不产生写入，但若需要 Telegram preflight，则按 read 等待 export 完成；
-- 无 export 时 write 仍串行并再次执行所有安全检查。
-
-理由：用户更看重可预测和稳定，而不是导出期间 Telegram 操作并发。
+**Accepted（用户体验选择 3B/4B）** — export batch 活跃时 Telegram read 等待；纯本地 RPC 可用；真正 send/forward 立即 `EXPORT_IN_PROGRESS`，不得排队后自动发送；dry-run 若需 Telegram preflight 则按 read 等待；无 export 时 write 仍串行并执行安全检查。
 
 ## D-029：GUI 关闭或崩溃不能终止 daemon-side export job
-**Accepted（用户体验选择 1B/5B）**。
-
-导出在 daemon 内执行并直接原子写 JSON。GUI 正常关闭或崩溃后 job 继续；GUI 重开通过 job registry 恢复进度/结果。daemon 自己崩溃后不承诺自动续跑同一个 Telegram job，但必须把安全 metadata 标记 interrupted，不能伪报成功。
-
-Option B 顺序继续是：`JSON success → checkpoint → optional read ack`，由 daemon coordinator 单进程保证。
+**Accepted（用户体验选择 1B/5B）** — 导出在 daemon 内执行并原子写 JSON；GUI 关闭/崩溃后 job 继续，重开 GUI 恢复进度/结果。daemon 自己崩溃后不承诺续跑原 job，但 safe metadata 标记 interrupted，不能伪报成功。
 
 ## D-030：daemon 按需启动、托盘可见、空闲自动退出
-**Accepted（用户体验选择 2A/6B/8B）**。
-
-- GUI/tgctl 可自动 `ensure_running()`；
-- 不注册 Windows Service、不设开机自启；
-- daemon 在交互式 Windows 会话显示托盘图标，可看连接/导出/空闲状态、打开 TG Exporter、请求退出；
-- 有 export job 时手动退出不得粗暴杀任务，优先“导出完成后退出”；
-- GUI 通过 lease/heartbeat 表示仍在使用；GUI 崩溃 lease 自动过期；
-- 无 GUI lease、无请求、无 job、无排队 read 后约 10 分钟退出；下次调用自动唤醒。
+**Accepted（用户体验选择 2A/6B/8B）** — GUI/tgctl 可 ensure_running；不注册 Windows Service/不开机自启；托盘可见；活跃 export 不粗暴退出；GUI lease/heartbeat；无 lease/request/job/queued read 后约 10 分钟退出。
 
 ## D-031：登录交互仍只属于 GUI
-**Accepted（用户体验选择 7A）**。
-
-手机号、OTP、2FA 只能由 TG Exporter GUI 收集。为了让 daemon 唯一拥有 Telethon，GUI 通过仅允许 `client.kind=gui` 的 auth RPC 调用 daemon；tgctl/Codex 调 auth RPC 必须得到 `AUTH_GUI_ONLY`。OTP/2FA 不持久化、不日志记录。
+**Accepted（用户体验选择 7A）** — phone/OTP/2FA 只能由 GUI 收集；GUI 通过 GUI-only auth RPC 调 daemon，tgctl/Codex 调 auth 必须 `AUTH_GUI_ONLY`；OTP/2FA 不持久化、不日志记录。
 
 ## D-032：write transport failure 不自动重试
-**Accepted（v0.2.0）**。
+**Accepted（v0.2.0）** — read-only RPC 在 daemon/pipe 故障后最多恢复并 retry 一次；真实 send/forward 请求已交给 daemon 后若连接中断，返回 `WRITE_OUTCOME_UNKNOWN`，必须先检查目标聊天，绝不自动 retry。
 
-read-only RPC 在 daemon/pipe 故障后最多自动恢复并重试一次；真实 send/forward 在请求已交给 daemon 后如果连接中断，客户端返回 `WRITE_OUTCOME_UNKNOWN`，必须先检查目标聊天，绝不自动 retry 造成重复消息。
-
-详细设计见 `docs/DAEMON_IPC_DESIGN.md`。
+详细第二代设计见 `docs/DAEMON_IPC_DESIGN.md`。
 
 ## D-033：第三代版本号固定为 v0.3.0，继承 v0.2.0 daemon
-**Accepted（2026-08-30）**。
-
-用户新提示词中的“旧 v0.1.9 → 新 v0.2.0”属于另一套版本叙述。仓库内统一映射为：第一代 `v0.1.x`、第二代 `v0.2.0` single-daemon、第三代 `v0.3.0` Personal Account Reader。v0.3.0 从 v0.2.0 架构继续开发，不另起 direct-Session reader，不覆盖 v0.2.0。
+**Accepted（2026-08-30）** — 仓库统一映射：第一代 `v0.1.x`、第二代 `v0.2.0` single-daemon、第三代 `v0.3.0` Personal Account Reader。v0.3 从 v0.2 架构继续，不另起 direct-Session reader，不覆盖 v0.2。
 
 ## D-034：全账号 dialogs 使用独立 reader model，不扩大 GUI GroupInfo
-**Accepted（v0.3.0）**。
-
-GUI `GroupInfo/chats.catalogue` 继续保持 group/channel 导出器语义。v0.3.0 新增 `DialogInfo` 等 reader-only 模型覆盖 private/bot/Saved Messages/archive/forum，避免为了 Codex reader 机械重写已验证 GUI。
+**Accepted（v0.3.0）** — GUI `GroupInfo/chats.catalogue` 保持 group/channel 导出器语义；reader 用独立模型覆盖 private/bot/Saved/archive/forum，避免机械重写已验证 GUI。
 
 ## D-035：reader 全部 bounded pagination；cursor 签名且永不携带 access_hash
-**Accepted（v0.3.0）**。
-
-默认 page 100、最大 500。cursor 使用安全 offset + query fingerprint + HMAC integrity，复用本地持久化 IPC identity secret；不得把 `access_hash`、`file_reference` 或其它 Telegram credential 放入 cursor。全历史不提供无提示无限读取。
+**Accepted（v0.3.0）** — default page 100/max 500；cursor = safe offsets + query fingerprint + HMAC，复用本地 IPC identity secret；不得包含 access_hash/file_reference/credential；不提供无提示无限读取。
 
 ## D-036：dialogs 默认 canonical stable order，messages history 用 message-id cursor
-**Accepted（v0.3.0）**。
-
-完整会话目录为避免新消息导致 activity order 重排，默认按 `(dialog_type_rank, marked_chat_id)` 做稳定分页；仍返回 last activity 字段。消息 history 默认 newest→older，以 `before_message_id` 继续。迁移群使用 current→legacy composite segment cursor，并以 `(source_chat_id,message_id)` 作为唯一定位键。
+**Accepted（v0.3.0）** — dialogs 按稳定顺序分页；history newest→older，以 message id 继续；迁移群 current→legacy composite segment cursor，唯一键 `(source_chat_id,message_id)`。
 
 ## D-037：sender-role 是查询时当前角色，不伪造历史角色
-**Accepted（v0.3.0）**。
-
-owner/admin/member filter 默认基于查询时 Telegram 当前 participant/admin snapshot。Telegram 不提供完整历史管理员任期，因此不得声称某人过去发送某条消息时一定具有/不具有管理员身份。role 不可见时返回 unknown/unavailable，unknown 不得当作 member。
+**Accepted（v0.3.0）** — role 基于查询时当前 participant/admin snapshot；不声称历史任期；不可见时 unknown/unavailable，unknown 不当 member。
 
 ## D-038：匿名管理员/send-as 必须结构化，但绝不反推个人
-**Accepted（v0.3.0）**。
-
-Message sender 统一结构化为 user/chat/channel/anonymous_admin/unknown。以 chat/channel 身份发言时返回 `posted_as_chat_id`；只有 metadata 能证明时才标 anonymous_admin。不得依据显示名、`post_author` 字符串或管理员列表猜 behind-the-scenes user id。
+**Accepted（v0.3.0）** — sender 结构化为 user/chat/channel/anonymous_admin/unknown；以 chat/channel 身份发言可返回 posted_as_chat_id；不得靠显示名/post_author/admin list 猜真实个人。
 
 ## D-039：消息 rich metadata 可读，媒体默认 metadata-only
-**Accepted（v0.3.0）**。
-
-history/search/get/topic history 统一输出 reply/forward/entities/reactions/poll/service/media metadata 等安全字段；默认不下载 media、不输出 file_reference。显式 `media download` 是本地磁盘副作用，必须先 plan 数量/预计大小并返回 confirmation token，第二次确认后才下载，且有普通/large/hard cap。
+**Accepted（v0.3.0）** — history/search/get/topic history 输出安全 rich metadata；默认不下载 media、不输出 file_reference。显式 media download 必须 plan→confirmation→download，有 normal/large/hard cap。
 
 ## D-040：v0.3 GUI 与 tgctl 不再互相 SESSION_BUSY
-**Accepted（v0.3.0）**。
-
-v0.3 继承 single-daemon，因此同代 GUI 与 tgctl 同时使用是正常场景，不能为了兼容旧提示词恢复 direct Session competition。`SESSION_BUSY` 只表示 daemon 无法取得 `SessionLease`（例如旧 v0.1.x direct binary 正占用）；packaged native exit code 必须保持 8。v0.1.10 的 UTF-8 console fix 和 packaged regression 必须 forward-port。
+**Accepted（v0.3.0）** — 同代 GUI/tgctl 共用 single daemon；`SESSION_BUSY` 只表示 daemon 无法取得 SessionLease（如旧 direct binary 占用）。packaged native exit code 8，v0.1.10 UTF-8 fix/regression 必须保留。
 
 ## D-041：Telegram 无法可靠枚举已删除消息时不得伪造 deleted=true
-**Accepted（v0.3.0）**。
-
-正常返回消息 `availability=available`。按 ID 查不到继续 `MESSAGE_NOT_FOUND/not_found_or_unavailable`；不能把“当前 API 查不到”武断解释为“已删除”。Secret Chat、已删除内容、无权内容不在 reader 能力范围。
+**Accepted（v0.3.0）** — 正常 availability=available；按 ID 查不到为 `MESSAGE_NOT_FOUND/not_found_or_unavailable`，不得武断解释为已删除。Secret Chat/已删除/无权内容不在能力范围。
 
 ## D-042：URL 域名过滤必须解析 hostname，不做字符串 contains
-**Accepted（v0.3.0）**。
+**Accepted（v0.3.0）** — `--url-domain example.com` 解析真实 hostname 后匹配 exact/subdomain；`example.com.evil.test` 不得匹配；不 follow redirect、不访问网页。
 
-`--url-domain example.com` 使用 Telegram URL entities + 安全文本 URL parser，规范化 hostname 后匹配 exact host 或真实 subdomain；`example.com.evil.test` 不得匹配。不 follow redirect、不访问目标网页。
-
-## D-043：v0.3.0 完成代码/测试/候选打包后停止，不自动发布 Release
-**Accepted（用户明确要求）**。
-
-v0.3.0 实施完成后报告 branch/head、测试、真实只读 E2E、candidate EXE/hash 和限制，然后等待用户验收。不得覆盖 v0.1.x Release，也不得未经新授权创建 v0.3.0 正式 Release。
+## D-043：v0.3.0 Candidate 完成后停止，不自动发布 Release
+**Accepted（用户明确要求）** — 代码/测试/Windows Candidate 完成后交用户真实账号 E2E；没有 E2E PASS + 用户明确授权，不 merge PR #20、不创建/覆盖 v0.3.0 Release。
 
 完整第三代设计见 `docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`。
