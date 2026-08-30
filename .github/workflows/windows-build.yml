@@ -29,18 +29,24 @@ jobs:
       - name: Test
         run: pytest -q
 
-      - name: GUI + reader import check
-        run: python -c "import telegram_exporter.gui; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + tgctl + reader import OK')"
+      - name: GUI + daemon + reader + CLI import check
+        run: python -c "import telegram_exporter.daemon_gui; import telegram_exporter.daemon_main; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + daemon + tgctl + reader import OK')"
 
-      - name: Build TGExporter EXE
+      - name: Build one-file TGExporter EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TGExporter launcher.py
+          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TGExporter --distpath dist\onefile --workpath build\onefile launcher.py
+
+      - name: Build portable TGExporter onedir
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir --paths src --name TGExporter --distpath dist\portable --workpath build\portable launcher.py
 
       - name: Build tgctl EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --console --onefile --paths src --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
+          Copy-Item .\dist\tgctl\tgctl.exe .\dist\portable\TGExporter\tgctl.exe
 
       - name: Packaged tgctl SESSION_BUSY exit-code contract
         shell: pwsh
@@ -66,30 +72,35 @@ jobs:
               throw "Session lock holder did not become ready"
             }
 
-            $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = (Resolve-Path ".\dist\tgctl\tgctl.exe").Path
-            $psi.Arguments = "status --json"
-            $psi.UseShellExecute = $false
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $process = [System.Diagnostics.Process]::Start($psi)
-            $stdout = $process.StandardOutput.ReadToEnd().Trim()
-            $stderr = $process.StandardError.ReadToEnd().Trim()
-            $process.WaitForExit()
-            $exitCode = $process.ExitCode
+            function Assert-SessionBusyContract([string]$exePath) {
+              $psi = [System.Diagnostics.ProcessStartInfo]::new()
+              $psi.FileName = (Resolve-Path $exePath).Path
+              $psi.Arguments = "status --json"
+              $psi.UseShellExecute = $false
+              $psi.RedirectStandardOutput = $true
+              $psi.RedirectStandardError = $true
+              $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+              $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+              $process = [System.Diagnostics.Process]::Start($psi)
+              $stdout = $process.StandardOutput.ReadToEnd().Trim()
+              $stderr = $process.StandardError.ReadToEnd().Trim()
+              $process.WaitForExit()
+              $exitCode = $process.ExitCode
 
-            Write-Host "packaged tgctl exit code: $exitCode"
-            Write-Host "packaged tgctl stdout: $stdout"
-            if ($stderr) { Write-Host "packaged tgctl stderr: $stderr" }
+              if (-not $stdout) {
+                throw "Packaged tgctl produced no JSON stdout: $exePath; stderr=$stderr"
+              }
+              $payload = $stdout | ConvertFrom-Json
+              if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
+                throw "Expected packaged tgctl JSON error SESSION_BUSY from $exePath; got: $stdout"
+              }
+              if ($exitCode -ne 8) {
+                throw "Expected packaged tgctl exit code 8 from $exePath; got $exitCode"
+              }
+            }
 
-            if (-not $stdout) { throw "Packaged tgctl produced no JSON stdout" }
-            $payload = $stdout | ConvertFrom-Json
-            if ($payload.ok -ne $false -or $payload.error.code -ne "SESSION_BUSY") {
-              throw "Expected packaged tgctl JSON error SESSION_BUSY; got: $stdout"
-            }
-            if ($exitCode -ne 8) {
-              throw "Expected packaged tgctl exit code 8 for SESSION_BUSY; got $exitCode"
-            }
+            Assert-SessionBusyContract ".\dist\tgctl\tgctl.exe"
+            Assert-SessionBusyContract ".\dist\portable\TGExporter\tgctl.exe"
           }
           finally {
             if ($holder -and -not $holder.HasExited) {
@@ -101,28 +112,41 @@ jobs:
       - name: Smoke-test packaged EXEs
         shell: pwsh
         run: |
-          & .\dist\TGExporter.exe --smoke-test
+          & .\dist\onefile\TGExporter.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\portable\TGExporter\TGExporter.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\dist\tgctl\tgctl.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\portable\TGExporter\tgctl.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Candidate SHA-256
+      - name: Prepare candidate assets and SHA-256
         shell: pwsh
         run: |
-          $gui = (Get-FileHash .\dist\TGExporter.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          $cli = (Get-FileHash .\dist\tgctl\tgctl.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$gui  TGExporter.exe" | Set-Content -Encoding ascii CANDIDATE_SHA256SUMS.txt
-          "$cli  tgctl.exe" | Add-Content -Encoding ascii CANDIDATE_SHA256SUMS.txt
-          Write-Host "TGExporter.exe SHA-256: $gui"
-          Write-Host "tgctl.exe SHA-256: $cli"
+          New-Item -ItemType Directory -Force candidate-assets | Out-Null
+          $exe = ".\candidate-assets\TGExporter-v0.3.0-candidate-windows-x64.exe"
+          $zip = ".\candidate-assets\TGExporter-v0.3.0-candidate-windows-x64-portable.zip"
+          $cli = ".\candidate-assets\tgctl.exe"
+          Copy-Item .\dist\onefile\TGExporter.exe $exe
+          Copy-Item .\dist\tgctl\tgctl.exe $cli
+          Compress-Archive -Path .\dist\portable\TGExporter -DestinationPath $zip -Force
+          $guiHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cliHash = (Get-FileHash $cli -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "$guiHash  $(Split-Path $exe -Leaf)",
+            "$zipHash  $(Split-Path $zip -Leaf)",
+            "$cliHash  $(Split-Path $cli -Leaf)"
+          ) | Set-Content -Encoding ascii .\candidate-assets\CANDIDATE_SHA256SUMS.txt
+          Write-Host "TGExporter candidate SHA-256: $guiHash"
+          Write-Host "Portable candidate SHA-256: $zipHash"
+          Write-Host "tgctl candidate SHA-256: $cliHash"
 
-      - name: Upload EXEs
+      - name: Upload candidate assets
         uses: actions/upload-artifact@v4
         with:
           name: TGExporter-v0.3.0-candidate-windows-x64
-          path: |
-            dist/TGExporter.exe
-            dist/tgctl/tgctl.exe
-            CANDIDATE_SHA256SUMS.txt
+          path: candidate-assets/*
           if-no-files-found: error
           retention-days: 30
