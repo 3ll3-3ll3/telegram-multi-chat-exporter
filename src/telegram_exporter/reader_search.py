@@ -14,6 +14,7 @@ from .reader_models import DialogInfo, MessageInfoV3, Page
 from .reader_service import MAX_PAGE_LIMIT, PersonalAccountReader, _dialog_rank
 
 CANDIDATE_SCAN_CAP = 5000
+MAX_REGEX_PATTERN_LENGTH = 512
 _URL_RE = re.compile(r"(?i)(?:https?://|tg://|www\.)[^\s<>\]\[(){}\"']+")
 _DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -29,6 +30,33 @@ def _validate_limit(limit: int) -> int:
             {"requested_limit": value, "max_limit": MAX_PAGE_LIMIT},
         )
     return value
+
+
+def _compile_regex(value: str | None, *, case_sensitive: bool) -> re.Pattern[str] | None:
+    if value is None:
+        return None
+    pattern = str(value)
+    if not pattern:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "regex 不能为空。")
+    if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
+        raise TelegramBridgeError(
+            INVALID_ARGUMENT,
+            f"regex 最长 {MAX_REGEX_PATTERN_LENGTH} 个字符。",
+            {"max_length": MAX_REGEX_PATTERN_LENGTH},
+        )
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        return re.compile(pattern, flags)
+    except re.error as exc:
+        details: dict[str, Any] = {}
+        position = getattr(exc, "pos", None)
+        if isinstance(position, int):
+            details["position"] = position
+        raise TelegramBridgeError(
+            INVALID_ARGUMENT,
+            "regex 表达式无效。",
+            details or None,
+        ) from exc
 
 
 def _idna_hostname(hostname: str) -> str:
@@ -204,6 +232,7 @@ def _message_matches(
     source_message: Any,
     *,
     contains: str | None,
+    regex_pattern: re.Pattern[str] | None,
     case_sensitive: bool,
     sender_id: int | None,
     sender_role: str | None,
@@ -218,6 +247,8 @@ def _message_matches(
         haystack = content if case_sensitive else content.casefold()
         if needle not in haystack:
             return False
+    if regex_pattern is not None and regex_pattern.search(content) is None:
+        return False
     if sender_id is not None and item.sender.sender_id != sender_id:
         return False
     if not _role_matches(item, sender_role):
@@ -259,6 +290,7 @@ async def _scan_source(
     result_limit: int,
     scan_budget: int,
     contains: str | None,
+    regex_pattern: re.Pattern[str] | None,
     case_sensitive: bool,
     sender_id: int | None,
     sender_role: str | None,
@@ -321,6 +353,7 @@ async def _scan_source(
             item,
             message,
             contains=contains,
+            regex_pattern=regex_pattern,
             case_sensitive=case_sensitive,
             sender_id=sender_id,
             sender_role=sender_role,
@@ -349,6 +382,7 @@ async def search_messages_page(
     *,
     chat: str | int | None,
     contains: str | None = None,
+    regex: str | None = None,
     sender_id: int | None = None,
     sender_role: str | None = None,
     since: datetime | None = None,
@@ -362,6 +396,7 @@ async def search_messages_page(
     case_sensitive: bool = False,
 ) -> Page:
     limit = _validate_limit(limit)
+    regex_pattern = _compile_regex(regex, case_sensitive=case_sensitive)
     if sender_role not in {None, "owner", "admin", "member"}:
         raise TelegramBridgeError(INVALID_ARGUMENT, "sender-role 只能是 owner/admin/member。")
     if has_link not in {"yes", "no", "all"}:
@@ -369,7 +404,7 @@ async def search_messages_page(
     if since and until and since >= until:
         raise TelegramBridgeError(INVALID_ARGUMENT, "since 必须早于 until。")
     normalized_domain = _normalize_domain(url_domain) if url_domain else None
-    if chat is None and not any((contains, sender_id, sender_role, message_type, topic_id, normalized_domain, has_link != "all", since, until)):
+    if chat is None and not any((contains, regex, sender_id, sender_role, message_type, topic_id, normalized_domain, has_link != "all", since, until)):
         raise TelegramBridgeError(
             INVALID_ARGUMENT,
             "全局搜索至少需要一个筛选条件；如需完整历史，请按会话使用 messages history。",
@@ -387,6 +422,7 @@ async def search_messages_page(
     query = {
         "chat_id": logical_row.chat_id if logical_row else None,
         "contains": contains,
+        "regex": regex,
         "sender_id": sender_id,
         "sender_role": sender_role,
         "since": since.isoformat() if since else None,
@@ -424,6 +460,7 @@ async def search_messages_page(
                 result_limit=limit - len(matches),
                 scan_budget=CANDIDATE_SCAN_CAP - total_scanned,
                 contains=contains,
+                regex_pattern=regex_pattern,
                 case_sensitive=case_sensitive,
                 sender_id=sender_id,
                 sender_role=sender_role,
@@ -498,6 +535,7 @@ async def search_messages_page(
                     result_limit=limit - len(matches),
                     scan_budget=CANDIDATE_SCAN_CAP - total_scanned,
                     contains=contains,
+                    regex_pattern=regex_pattern,
                     case_sensitive=case_sensitive,
                     sender_id=sender_id,
                     sender_role=sender_role,
