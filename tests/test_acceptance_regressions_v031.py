@@ -104,15 +104,23 @@ def test_zero_current_unread_export_is_valid_json_and_does_not_mark_read(tmp_pat
     assert client.read_ack_calls == 0
 
 
-def test_proxy_safe_label_drops_auth_and_query_components() -> None:
+def test_proxy_parser_rejects_auth_or_query_bearing_input() -> None:
+    # Windows ProxyServer support intentionally accepts endpoint metadata only.
+    # Inputs carrying credentials/query data are rejected instead of being
+    # normalized into a usable proxy configuration. This keeps authentication
+    # material out of both Telethon proxy settings and normal logging.
     username = "synthetic-user"
     password = "synthetic-password"
     query_secret = "synthetic-query-secret"
     config = parse_windows_proxy_server(
         f"http://{username}:{password}@127.0.0.1:7890?token={query_secret}"
     )
+    assert config is None
+
+
+def test_proxy_safe_label_contains_endpoint_only() -> None:
+    config = parse_windows_proxy_server("http://127.0.0.1:7890")
     assert config is not None
     assert config.safe_label == "http://127.0.0.1:7890"
-    assert username not in config.safe_label
-    assert password not in config.safe_label
-    assert query_secret not in config.safe_label
+    assert "@" not in config.safe_label
+    assert "?" not in config.safe_label
