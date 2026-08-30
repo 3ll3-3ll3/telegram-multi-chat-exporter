@@ -381,25 +381,33 @@ async def search_messages_page(
         start_rank = int(position.get("dialog_rank", -1))
         start_chat_id = int(position.get("chat_id", -(2**63)))
         start_before = int(position.get("before_message_id", 0) or 0)
+        start_segment = str(position.get("segment") or "current")
+        if start_segment not in {"current", "legacy"}:
+            raise TelegramBridgeError(INVALID_ARGUMENT, "search cursor segment 无效。")
         started_same = False
 
         for index, row in enumerate(catalogue):
             key = (_dialog_rank(row.dialog_type), row.chat_id)
             if key < (start_rank, start_chat_id):
                 continue
-            if key == (start_rank, start_chat_id):
+            same_cursor_row = key == (start_rank, start_chat_id)
+            if same_cursor_row:
                 before_id = start_before
+                segment = start_segment
                 started_same = True
             elif not started_same and (start_rank, start_chat_id) != (-1, -(2**63)):
                 if key <= (start_rank, start_chat_id):
                     continue
                 before_id = 0
+                segment = "current"
             else:
                 before_id = 0
+                segment = "current"
             started_same = True
 
-            segment = "current"
             legacy_id = row.migrated_from_chat_id
+            if segment == "legacy" and legacy_id is None:
+                raise reader.cursor.stale("search cursor 指向 legacy segment，但迁移关系已不可用。")
             while len(matches) < limit and total_scanned < CANDIDATE_SCAN_CAP:
                 source_id = row.chat_id if segment == "current" else int(legacy_id or 0)
                 rows, scanned, last_id, exhausted, local_ms = await _scan_source(
