@@ -108,13 +108,16 @@ tgctl messages get --chat <ref> --ids 123 --legacy-schema --json
 
 ```powershell
 tgctl messages search --chat <ref> --contains "pikpak" --limit 500 --json
+tgctl messages search --chat <ref> --regex "release-\d+" --json
 tgctl messages search --chat <ref> --sender-role admin --contains "pikpak" --json
 tgctl messages search --chat <ref> --sender-id 123456 --since 2026-08-01 --json
 tgctl messages search --chat <ref> --url-domain mypikpak.com --json
 tgctl messages search --contains "预推免" --limit 100 --jsonl
 ```
 
-支持 single/global、contains、sender-id、sender-role、since/until、message-type、topic、has-link、url-domain、cursor、limit。
+支持 single/global、contains、regex、sender-id、sender-role、since/until、message-type、topic、has-link、url-domain、cursor、limit。
+
+`--regex` 是 Python regex 的本地 bounded filter。默认忽略大小写，`--case-sensitive` 同时控制 contains/regex 的大小写语义。空、非法或超过 512 字符的 regex 返回 `INVALID_ARGUMENT`，并且在 Telegram 请求开始前失败。regex 与 case-sensitive 状态属于 cursor query fingerprint；换 regex 后继续使用旧 cursor 返回 `INVALID_CURSOR`。regex 可与其他筛选组合；legacy schema 不支持 regex。
 
 `--url-domain` 解析真实 hostname；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`。不会访问 URL 或 follow redirect。
 
@@ -247,7 +250,7 @@ Reader 扩展没有扩大 send/forward 授权。
 
 > 使用 tgctl，只读列出我 Telegram 的所有会话类型，分页直到 `has_more=false`，不要执行任何写操作或媒体下载。
 
-> 找到目标聊天，读取最近 500 条并列出当前 owner/admin；再用 `--url-domain <domain>` 判断真实域名链接的实际 sender。只依据结构化 sender/forward 字段，不根据正文猜身份。
+> 找到目标聊天，读取最近 500 条并列出当前 owner/admin；再用 `--url-domain <domain>` 与 `--regex <pattern>` 做 bounded 搜索。只依据结构化 sender/forward 字段，不根据正文猜身份。
 
 > 搜索 Saved Messages 中最近一个月包含“保研”的内容，只读，不标已读。
 
@@ -260,7 +263,7 @@ v0.3.1 Candidate 合并/发布前用户本机至少验证：
 1. account get 与 all dialog types，包括 private/bot/Saved/archive；
 2. chats get、owner/admin；
 3. 最近 500 history；
-4. contains/regex（如 CLI 支持）、sender-id/current role/url-domain；
+4. contains/regex/url-domain/sender-id/current sender-role；
 5. structured sender / anonymous admin/send-as/unknown_reason；
 6. history/search 连续分页无重复，cursor 跨查询 → `INVALID_CURSOR`；
 7. since/until；
