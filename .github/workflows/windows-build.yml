@@ -31,7 +31,7 @@ jobs:
         run: .\.venv\Scripts\python.exe -m pytest -q
 
       - name: Explicit v0.3.1 regressions
-        run: .\.venv\Scripts\python.exe -m pytest -q tests/test_domain_filter_v031.py tests/test_gui_shutdown_v031.py tests/test_reader_sender_v031.py
+        run: .\.venv\Scripts\python.exe -m pytest -q tests/test_domain_filter_v031.py tests/test_search_regex_v031.py tests/test_gui_shutdown_v031.py tests/test_reader_sender_v031.py
 
       - name: Compile source
         run: .\.venv\Scripts\python.exe -m compileall src
@@ -42,8 +42,8 @@ jobs:
       - name: GUI + daemon + reader + CLI import check
         run: .\.venv\Scripts\python.exe -c "import telegram_exporter.daemon_gui; import telegram_exporter.daemon_main; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_runtime; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + daemon + tgctl + reader import OK')"
 
-      - name: Source url-domain offline smoke
-        run: .\.venv\Scripts\python.exe tgctl_launcher.py --smoke-test-url-domain
+      - name: Source search-filter offline smoke
+        run: .\.venv\Scripts\python.exe tgctl_launcher.py --smoke-test-search-filters
 
       - name: Build one-file TGExporter EXE
         shell: pwsh
@@ -61,13 +61,13 @@ jobs:
           .\.venv\Scripts\pyinstaller.exe --noconfirm --clean --console --onefile --paths src --hidden-import encodings.idna --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
           Copy-Item .\dist\tgctl\tgctl.exe .\dist\portable\TGExporter\tgctl.exe
 
-      - name: Packaged url-domain offline regression
+      - name: Packaged search-filter offline regression
         shell: pwsh
         run: |
-          & .\dist\tgctl\tgctl.exe --smoke-test-url-domain
-          if ($LASTEXITCODE -ne 0) { throw "standalone tgctl url-domain smoke failed: $LASTEXITCODE" }
-          & .\dist\portable\TGExporter\tgctl.exe --smoke-test-url-domain
-          if ($LASTEXITCODE -ne 0) { throw "portable tgctl url-domain smoke failed: $LASTEXITCODE" }
+          & .\dist\tgctl\tgctl.exe --smoke-test-search-filters
+          if ($LASTEXITCODE -ne 0) { throw "standalone tgctl search-filter smoke failed: $LASTEXITCODE" }
+          & .\dist\portable\TGExporter\tgctl.exe --smoke-test-search-filters
+          if ($LASTEXITCODE -ne 0) { throw "portable tgctl search-filter smoke failed: $LASTEXITCODE" }
 
       - name: Packaged tgctl SESSION_BUSY exit-code contract
         shell: pwsh
