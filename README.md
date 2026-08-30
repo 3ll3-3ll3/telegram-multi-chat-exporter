@@ -2,7 +2,7 @@
 
 **TG 导出器**：Windows Telegram GUI 导出器 + 本地 `tgctl` 机器接口。
 
-> 正式 Release 当前仍为 v0.1.10。`codex/personal-account-reader-v0.3.0` 是第三代 **v0.3.0 candidate** 开发线，完成验收前不发布 Release。
+> 当前正式 Release：**v0.3.0**，正式 commit/tag 为 `8e230e33ea928bcf71296e4e5379b097446dbec5` / `v0.3.0`。当前修复开发线是 `codex/v0.3.1-runtime-fixes`；v0.3.1 在真实账号人工复验和用户明确发布授权前只作为 candidate，不创建 Release。
 
 历史本地目录继续固定为：
 
@@ -17,10 +17,10 @@ v0.1.x  GUI exporter + direct-session tgctl
    ↓
 v0.2.0  single daemon + Windows Named Pipe IPC
    ↓
-v0.3.0  v0.2 daemon + Personal Account Reader
+v0.3.x  v0.2 daemon + Personal Account Reader + runtime fixes
 ```
 
-v0.3.0 不重新制造 GUI/tgctl Session 竞争：GUI、tgctl、Codex 都通过同一个后台 daemon 使用唯一 Telegram Session。
+v0.3.x 不重新制造 GUI/tgctl Session 竞争：GUI、tgctl、Codex 都通过同一个后台 daemon 使用唯一 Telegram Session。
 
 ## GUI 体验
 
@@ -36,7 +36,9 @@ GUI 继续保持已验证的多群独立导出体验：
 
 第二代 daemon 体验继续保留：关闭 GUI 后正在运行的导出可以继续；Codex/tgctl 可按需唤醒 daemon；后台有 Windows 托盘；空闲约 10 分钟自动退出。导出期间 Telegram reader 等待，真实 send/forward 直接拒绝而不是悄悄排队发送。
 
-## v0.3.0 Personal Account Reader
+v0.3.1 修复 GUI 正常关闭顺序：窗口关闭时先取消并等待 GUI 本地任务、停止 heartbeat、detach GUI lease，再结束 qasync/Qt event loop。正常 GUI 关闭不会请求关闭共享 daemon；真正的 shutdown 异常仍会记录。
+
+## v0.3 Personal Account Reader
 
 第三代目标是让本地 Codex 不依赖 GUI 导出文件，也能通过 `tgctl` 安全、分页地读取当前个人 Telegram 账号有权访问的信息。
 
@@ -61,6 +63,8 @@ tgctl chats members --chat <ref> --role admin --limit 100 --jsonl
 
 成员身份来自 Telegram participant/admin 数据，不通过显示名猜测。`owner/admin/member` 表示查询时当前角色；匿名管理员和 send-as 消息不会被伪造归属到某个具体用户。
 
+v0.3.1 进一步细分 owner visibility：权限不足、参与者不可见、creator 未出现在 bounded 返回页、Telegram 未返回 creator，以及能被数据支持的真正未找到，不再统一压成 `not_found`。
+
 ### 完整历史分页
 
 ```powershell
@@ -73,6 +77,8 @@ tgctl messages history --chat me --since 2026-08-01 --until 2026-09-01 --jsonl
 
 Rich message schema 包含安全可得的：结构化 sender、reply、forum topic、forward origin、entities、views、forwards、reactions、poll、service action、media metadata 等。缺失消息仍返回 `MESSAGE_NOT_FOUND`，不会把“查不到”武断解释为“已删除”。
 
+v0.3.1 sender 识别优先使用 Telegram 原始 sender peer 字段；broadcast channel、send-as、anonymous admin 等可确认时恢复正确类型，无法确认时继续 `sender_type=unknown` 并返回 `unknown_reason`。转发来源始终单独保存在 `forward_origin`，不得冒充实际发送者。
+
 ### 高级搜索
 
 ```powershell
@@ -83,6 +89,8 @@ tgctl messages search --contains "预推免" --limit 100 --jsonl
 ```
 
 支持单会话与全局、sender-id、当前 sender-role、时间范围、message type、forum topic、是否含链接、真实 URL hostname、cursor/limit。`--url-domain mypikpak.com` 会解析 hostname，`mypikpak.com.evil.com` 不会被误判为目标域名。
+
+v0.3.1 的域名规范化完全离线，不依赖公共后缀服务或网络；非法域名返回结构化 `INVALID_ARGUMENT`。CI 会直接运行最终 PyInstaller standalone/portable `tgctl.exe` 的 url-domain smoke，避免只在源码环境通过。
 
 ### Forum Topic
 
@@ -153,7 +161,7 @@ tgctl send --to me --text "test" --dry-run --json
 
 ## Session / daemon
 
-v0.3 正常情况：
+v0.3.x 正常情况：
 
 ```text
 GUI ─┐
@@ -161,7 +169,7 @@ GUI ─┐
 tgctl┘
 ```
 
-所以 v0.3 GUI 与 v0.3 tgctl 可以同时存在，不应出现旧版 GUI↔tgctl `SESSION_BUSY`。
+所以 GUI 与 tgctl 可以同时存在，不应出现旧版 GUI↔tgctl `SESSION_BUSY`。
 
 `SESSION_BUSY` 只作为兼容边界：如果旧 v0.1.x/direct process 已经 OS-lock 同一 Session，daemon 安全失败，打包版 `tgctl` 必须返回结构化 `SESSION_BUSY` 且 native exit code = 8。
 
@@ -185,6 +193,7 @@ Agent/Codex 修改前依次阅读：
 6. [`docs/TESTING.md`](docs/TESTING.md)
 7. [`SECURITY.md`](SECURITY.md)
 8. [`docs/CODEX_TGCTL.md`](docs/CODEX_TGCTL.md)
+9. [`docs/releases/v0.3.1.md`](docs/releases/v0.3.1.md) when working on the v0.3.1 patch line.
 
 开发运行：
 
@@ -199,7 +208,7 @@ python -m telegram_exporter.tgctl dialogs list --limit 20 --json
 
 ## Release
 
-正式 Release 仍从 GitHub Releases 分发。**当前 v0.3.0 分支只产出 candidate，未经用户真实账号验收与明确发布授权，不创建或覆盖 v0.3.0 Release。**
+正式 Release 从 GitHub Releases 分发。**v0.3.0 已正式发布且不得移动、覆盖或重写。v0.3.1 当前只产出 candidate；未经真实账号人工复验与用户明确发布授权，不创建 v0.3.1 tag/Release。**
 
 ## License
 
