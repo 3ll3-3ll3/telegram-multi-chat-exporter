@@ -1,14 +1,17 @@
 # Testing Guide
 
-本项目测试分三层：
+本项目测试分四层。当前精确状态/冻结 Candidate 见 `HANDOFF.md`。
 
-1. CI/unit/mock：模型、GUI 导出、tgctl parser/protocol/safety、PyInstaller。
-2. packaged smoke-test：TGExporter.exe / tgctl.exe 能启动 smoke path。
-3. 真实 Telegram E2E：登录、folders、read marker、migration、真实 search/forward/send。
+```text
+1. unit/mock
+2. Windows packaged CI
+3. hash-traceable Candidate artifact
+4. user real Telegram E2E
+```
 
-CI green 不等于真实账号 E2E。
+**CI green 不等于真实 Telegram E2E。**
 
-## 1. 本地/CI 基线
+## 1. Source test baseline
 
 ```powershell
 python -m venv .venv
@@ -17,277 +20,328 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-v0.1.9+ 最低 PR 门槛：
+新行为必须尽量先有 deterministic unit/mock regression，再依赖真人 E2E。
 
-```text
-pytest -q
-GUI + tgctl import check
-TGExporter one-file build
-TGExporter packaged --smoke-test
-tgctl one-file build
-tgctl packaged --smoke-test
-```
+## 2. Windows package CI
 
-正式 Release 还必须验证 GUI portable，并确认 portable 内 `tgctl.exe` 也能 smoke-test。
+任何影响 Windows runtime 的 PR 至少检查：
 
-## 2. GUI 回归矩阵
+- imports；
+- PyInstaller build；
+- packaged smoke；
+- native process exit codes；
+- artifact/hash generation。
 
-至少保持：
-
-- 首次 GUI 登录与 Session 复用；
-- Windows system proxy / Clash；
-- qasync non-blocking login/dialog；
-- focused workspace；
-- Telegram Chat Folder；
-- avatar lazy load；
-- Export Category create/persist/delete-without-disk-delete；
-- `category/group/timestamp.json`；
-- same-second no overwrite；
-- Basic Group → Supergroup catalogue collapse；
-- migrated date-range legacy + current history；
-- frozen current unread；
-- Option B read ack order；
-- since-last monotonic checkpoint；
-- shutdown no `await None` fatal dialog。
-
-用户已在 v0.1.8 对分类目录、migration collapse/history 与旧 Session/settings 兼容完成真人验证。
-
-## 3. tgctl unit tests
-
-`tests/test_tgctl.py` 至少覆盖：
-
-```text
-CLI 参数解析
---json success envelope
-structured failure/error code
-chat not found
-ambiguous title -> candidates
-search contains/since/until/limit
-messages get missing ids
-forward dry-run no write
-send dry-run no write
-write logs do not contain message body
-20 default forward limit
-200 allow-large hard cap
-NOT_AUTHORIZED
-FloodWait -> retry_after_seconds
-safe status/output excludes credential fields
-```
-
-`tests/test_session_lock.py` 覆盖 SessionLease 基本生命周期。
-
-所有 Telegram API 实际 write unit tests 使用 Fake/Mock client；CI 不连接用户账号。
-
-## 4. JSON stdout test
-
-`--json` 模式必须：
-
-- stdout 只有一份 JSON；
-- 不含 logging 前缀；
-- success 为 `{"ok":true,"data":...}`；
-- failure 为 `{"ok":false,"error":...}`；
-- exit code 0/非0 与结果匹配。
-
-stderr 可以用于人类模式错误，但 JSON 模式不得要求 Codex 解析日志判断成功失败。
-
-## 5. Chat resolution tests
-
-允许：marked chat_id、精确 @username、精确 title。
-
-必须测：
-
-- 单一精确 title 成功；
-- 两个相同 title → `AMBIGUOUS_CHAT`；
-- details 包含候选 chat_id/title/username/type；
-- numeric id 不存在 → `CHAT_NOT_FOUND`；
-- 不 first-match。
-
-`chats list` 继续复用 migration-collapsed catalogue，不能重新显示 legacy Basic Group duplicate。
-
-## 6. Search tests
-
-第一版 deterministic filter：
-
-```text
-chat
-contains
-since inclusive
-until exclusive
-limit
-case_sensitive optional
-```
-
-测试 text/caption 范围；不下载媒体。
-
-时间无 tz 的 CLI parser 按本机 timezone 解释；aware datetime 原样使用。
-
-## 7. Write safety tests
-
-### forward dry-run
-
-- 完成 source/destination resolution；
-- 检查 ids；
-- 不调用 `client.forward_messages`；
-- 返回 requested/successful/failed ids；
-- `--to me` 可解析 Saved Messages。
-
-### real forward mock
-
-- 必须调用 Telethon `forward_messages`；
-- 不能改为复制 text + `send_message`；
-- media message first version 不真正 forward，进入 failed_ids。
-
-### send dry-run
-
-- 不调用 `send_message`；
-- stdout 可回显用户明确提供的 dry-run text；
-- app.log 不含 body。
-
-### real send mock
-
-- `parse_mode=None`；
-- 不附加 media/file；
-- 返回 sent message id。
-
-### limits
-
-```text
-20 条：默认允许
-21 条：默认 INVALID_ARGUMENT
-21 条 + --allow-large-batch：允许
-200 条 + flag：允许
-201 条 + flag：拒绝
-```
-
-## 8. FloodWait
-
-mock `FloodWaitError`，预期：
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "FLOOD_WAIT",
-    "details": {"retry_after_seconds": 37}
-  }
-}
-```
-
-不得自动循环 retry。真实账号 E2E 不要故意制造 FloodWait。
-
-## 9. Session ownership / concurrency
-
-第一版 Telethon SQLiteSession 由 `SessionLease` 保证单进程所有权。
-
-真人 E2E：
-
-1. 打开 TG Exporter GUI 并连接。
-2. 另一个 shell 执行 `tgctl status --json`。
-3. 预期 `SESSION_BUSY`，无 SQLite corruption。
-4. 关闭 GUI。
-5. tgctl 再执行应正常获得 Session。
-6. 反向：让一个 tgctl 操作占用 Session 时启动 GUI，应得到友好 busy 提示。
-
-不要通过删除 lock file 测试解锁；真正 ownership 来自 OS lock。
-
-## 10. tgctl 真实账号 E2E
-
-先确保 v0.1.8 GUI 已登录并关闭 GUI。
-
-只读：
-
-```powershell
-tgctl status --json
-tgctl chats list --search "保研" --json
-tgctl chats list --folder "保研" --json
-tgctl messages search --chat <chat_id> --contains "预推免" --limit 20 --json
-tgctl messages get --chat <chat_id> --ids <message_id> --json
-```
-
-检查：无需 phone/OTP/2FA；chat_id/title 正确；文本来自真实消息；无媒体下载。
-
-## 11. 真实 Telegram 写操作 E2E
-
-只有用户明确确认后执行，优先 Saved Messages。
-
-先 dry-run：
-
-```powershell
-tgctl forward --from <chat_id> --to me --ids <message_id> --dry-run --json
-tgctl send --to me --text "TG Exporter Codex bridge test" --dry-run --json
-```
-
-确认 Telegram 没产生新消息。
-
-用户确认后真实写：
-
-```powershell
-tgctl forward --from <chat_id> --to me --ids <message_id> --json
-tgctl send --to me --text "TG Exporter Codex bridge test" --json
-```
-
-检查 Saved Messages：
-
-- forward 是真正 forward（保留 Telegram 转发来源语义）；
-- send 是纯文本；
-- 返回 JSON ids 与实际一致。
-
-不要自行向陌生人/陌生群测试。
-
-## 12. Security tests
-
-仓库/CI/app.log 不得出现：
-
-```text
-api_hash
-phone
-OTP/code
-2FA
-.session contents
-message body
-avatar bytes
-```
-
-特别测试 send/forward 日志：正文字符串不能出现在 `caplog`。
-
-`status` 不输出 phone；只允许 user id/display name/username/session safe label/proxy safe label。
-
-## 13. Release validation
-
-正式 v0.1.9+ Release 必须包含：
-
-```text
-TGExporter-vX.Y.Z-windows-x64.exe
-TGExporter-vX.Y.Z-windows-x64-portable.zip
-tgctl.exe
-SHA256SUMS.txt
-```
-
-Portable ZIP 内必须存在：
-
-```text
-TGExporter/TGExporter.exe
-TGExporter/tgctl.exe
-```
-
-Release workflow 必须完成：
+v0.3 Candidate 当前 gate：
 
 ```text
 pytest
-GUI + tgctl import
-GUI one-file build
-GUI portable build
-tgctl build
-GUI one-file smoke
-GUI portable smoke
-tgctl standalone smoke
+GUI + daemon + reader + CLI import
+TGExporter one-file build
+TGExporter portable build
+tgctl one-file build
+standalone SESSION_BUSY JSON + native exit 8
+portable SESSION_BUSY JSON + native exit 8
+one-file GUI smoke
+portable GUI smoke
+standalone tgctl smoke
 portable tgctl smoke
-SHA256SUMS
-Release upload
+candidate SHA-256
+artifact upload
 ```
 
-Release 后核对 tag/target/draft/prerelease/assets/hashes。
+不要只看 PowerShell `$?` 验证 CLI error code；使用 native Process ExitCode。
 
-## 14. Future MCP tests
+## 3. Stable GUI regression
 
-当前不做 MCP。如果未来实现，必须新增 daemon ownership、IPC auth、tool schema、write confirmation、crash recovery 测试；不得让 MCP 绕过 tgctl 已建立的 write safety invariants。
+不得破坏已经稳定/真人验证的：
+
+- focused workspace；
+- Telegram Chat Folder filter；
+- avatar lazy load/failure fallback；
+- Export Category create/persist/delete-without-disk-delete；
+- `output/category/group/timestamp.json`；
+- same-second no overwrite；
+- Basic Group→Supergroup catalogue collapse；
+- date-range current+legacy history；
+- current-unread frozen boundary；
+- Option B `JSON success → checkpoint → optional read ack`；
+- since-last checkpoint；
+- Windows system proxy；
+- qasync non-blocking dialog/shutdown。
+
+## 4. qasync regression
+
+历史 bug：blocking modal/nested loop 可导致 asyncio task re-entry。
+
+测试/审查要求：
+
+- async paths 不使用 `QDialog.exec()` 或 static blocking dialog；
+- shutdown cleanup 异常不会冒成 fatal top-level error；
+- `disconnect()` awaitable/sync variants 都可处理；
+- CLI Core 不依赖 Qt event loop。
+
+## 5. v0.1.10 tgctl compatibility
+
+必须长期保留：
+
+- `status/chats list/messages search/messages get/forward/send`；
+- JSON stdout 不混普通 log；
+- `MESSAGE_NOT_FOUND` / `AMBIGUOUS_CHAT`；
+- true forward；
+- send plain text；
+- dry-run；
+- 20/200 forward cap；
+- FloodWait structured stop；
+- write body not logged；
+- direct-session conflict safely `SESSION_BUSY`；
+- packaged UTF-8 Chinese JSON；
+- `SESSION_BUSY` native exit code 8。
+
+v0.1.9 已真人验证实际 Saved Messages send/forward；不要为了每次回归向陌生目标执行 write。
+
+## 6. v0.2/v0.3 daemon regression
+
+- daemon unique Session owner；
+- GUI/tgctl clients do not direct-open Session；
+- authenticated Named Pipe JSON bytes；
+- GUI + same-generation tgctl coexist；
+- legacy direct Session holder → safe `SESSION_BUSY`；
+- GUI close/crash does not cancel active daemon export；
+- job metadata recoverable by reopened GUI；
+- idle exit / on-demand wake；
+- export active: Telegram reader waits；
+- export active: real send/forward immediately `EXPORT_IN_PROGRESS`；
+- write transport disconnect after submit → `WRITE_OUTCOME_UNKNOWN`, no replay。
+
+## 7. Reader models / dialogs
+
+Mock/API contract should cover:
+
+```text
+group
+supergroup
+channel
+private
+bot
+Saved Messages
+archive
+forum
+unread/pinned/muted
+Telegram folder membership
+migration metadata
+```
+
+Saved Messages must not duplicate the self dialog. Safe output must not expose access hashes/credentials.
+
+## 8. Pagination / cursor
+
+Must cover:
+
+- default 100 / max 500；
+- cursor HMAC sign/verify；
+- method/query binding；
+- tamper rejection；
+- no `access_hash/file_reference/credential` in cursor；
+- dialogs canonical stable pagination；
+- history multi-page no overlap/gap；
+- newest→older；
+- Basic Group migration current→legacy segment transition；
+- global/single search continuation；
+- invalid → `INVALID_CURSOR`；
+- unrecoverable continuation → `CURSOR_STALE`。
+
+ADR: `docs/decisions/003-bounded-reader-pagination-and-safe-cursors.md`.
+
+## 9. Migration regression
+
+Critical cases:
+
+- legacy row not duplicated in visible catalogue；
+- do not merge unrelated same-name chats；
+- current logical chat remains primary；
+- history unique key `(source_chat_id,message_id)`；
+- global search legacy cursor continues same segment without repeat/gap；
+- rich get on legacy source returns current logical `chat_id` + legacy `source_chat_id`；
+- current role snapshot for legacy messages uses current logical Supergroup entity。
+
+These include bugs found in the 2026-08-30 pre-E2E tail audit and must remain regression-covered.
+
+## 10. Members / sender identity
+
+Test:
+
+- owner/admin/member mapping；
+- current-role semantics；
+- unknown role not coerced to member；
+- admin title；
+- bot/deleted account safe representation；
+- permissions unavailable；
+- Basic Group vs Supergroup/Channel APIs；
+- channel/chat send-as；
+- anonymous admin without hidden-user inference。
+
+Never infer role/identity from display name or `post_author`.
+
+## 11. Rich MessageInfoV3
+
+At least:
+
+```text
+chat_id / source_chat_id / message_id
+date/edit_date
+structured sender
+text/caption
+entities
+reply/reply_top
+forum_topic_id
+forward origin
+grouped_id
+views/forwards
+reactions
+poll
+service action
+pinned
+media metadata
+availability
+```
+
+Missing message remains `MESSAGE_NOT_FOUND/not_found_or_unavailable`, not fabricated deleted=true.
+
+## 12. Advanced search
+
+Cover single/global:
+
+- contains；
+- sender ID；
+- current sender role；
+- since/until；
+- message type；
+- Forum topic；
+- has-link；
+- URL domain；
+- cursor/limit。
+
+URL domain security examples:
+
+```text
+example.com              match
+cdn.example.com          match
+example.com.evil.test    reject
+notexample.com           reject
+```
+
+Do not access target URLs or follow redirects. Candidate scan stays bounded and continues via cursor.
+
+## 13. Forum
+
+Test topic list/history, bounded pagination/cursor, rich topic-history schema and non-forum → `NOT_A_FORUM`.
+
+Live Forum E2E is conditional on the user's account having a suitable forum.
+
+## 14. Media metadata / explicit download
+
+Normal history/search/get is metadata-only and must not create files.
+
+Download tests:
+
+- first call → `DOWNLOAD_CONFIRMATION_REQUIRED`；
+- plan does not create output dir or call download；
+- token binds chat/ids/output/large flag/plan digest；
+- mismatch/expiry rejected；
+- normal 20 files/500 MiB；
+- explicit large hard cap 200 files/5 GiB；
+- unknown-size actual bytes still enforce cap；
+- safe basename/path traversal handling；
+- `.part` → atomic final rename；
+- error/cancel does not leave partial file pretending success；
+- confirmed transport outcome is not auto-retried。
+
+Real media download is **not** default human E2E; only when user explicitly chooses.
+
+## 15. Security regression
+
+Ordinary logs/cursors/safe JSON must not leak:
+
+```text
+api_id/api_hash
+phone/OTP/2FA
+Session/credentials
+IPC secret
+access_hash/file_reference
+message body/caption/URL text/media filename
+```
+
+Message body is allowed only as explicit reader stdout data.
+
+Test safe exception mapping; avoid raw TL object repr in logs.
+
+## 16. Exit codes
+
+Important CLI codes:
+
+```text
+2  INVALID_ARGUMENT
+3  NOT_AUTHORIZED / AUTH_GUI_ONLY
+4  CHAT_NOT_FOUND / MESSAGE_NOT_FOUND
+5  AMBIGUOUS_CHAT
+6  FLOOD_WAIT
+7  WRITE_FAILED
+8  SESSION_BUSY
+9  EXPORT_IN_PROGRESS
+10 WRITE_OUTCOME_UNKNOWN
+11 DAEMON_UNAVAILABLE
+12 INVALID_CURSOR / CURSOR_STALE
+13 ACCESS_DENIED / MEMBERS_UNAVAILABLE
+14 NOT_A_FORUM
+15 DOWNLOAD_CONFIRMATION_REQUIRED
+16 DOWNLOAD_LIMIT_EXCEEDED
+130 Ctrl+C
+```
+
+## 17. Human Telegram E2E for v0.3
+
+Before merge/release, user machine should validate the frozen Candidate listed in `HANDOFF.md`.
+
+Read-first checklist:
+
+1. dialogs: group/supergroup/channel/private/bot/Saved/archive；
+2. Telegram Folder membership；
+3. real 500-message history；
+4. owner/admin；
+5. sender/current role/domain filters；
+6. anonymous admin/send-as not misattributed；
+7. history/search multiple pages no overlap/gap；
+8. since/until；
+9. Saved Messages history/search；
+10. `MESSAGE_NOT_FOUND`；
+11. `AMBIGUOUS_CHAT`；
+12. v0.3 GUI + tgctl coexist；
+13. legacy direct lock → packaged `SESSION_BUSY` + exit 8；
+14. GUI under legacy lock gives safe diagnostic, no raw `database is locked`；
+15. log/stdout safety；
+16. Forum if available；
+17. metadata-only creates no media files；
+18. media plan creates no directory/files。
+
+Do not intentionally trigger FloodWait. Default E2E does not send/forward/mark-read. Real media confirm download only with explicit user choice.
+
+## 18. v0.3 release gate
+
+Current rule:
+
+```text
+automated Candidate green
+→ frozen hash-traceable runtime
+→ human E2E PASS
+→ explicit user release authorization
+→ merge/release
+```
+
+If E2E discovers runtime issues: fix only actual issue, add regression, rerun Windows CI, revalidate affected live scenario.
+
+ADR: `docs/decisions/006-human-e2e-release-gate.md`.
+
+## 19. Documentation-only handoff PR
+
+The AI handoff docs PR should still run normal PR CI because `pull_request` triggers Windows build. A docs-only change does not need a new formal Release, but CI must be green before considering the documentation safe to merge.
