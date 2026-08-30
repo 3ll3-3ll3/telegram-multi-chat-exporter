@@ -56,8 +56,8 @@ def _iter_kwargs(plan: GroupExportPlan) -> dict:
         kwargs["offset_date"] = plan.start_at
     elif plan.mode is ExportMode.UNREAD:
         kwargs["min_id"] = plan.group.read_inbox_max_id
-        # Freeze "current unread" to the dialog snapshot captured when the
-        # group catalogue was loaded/refreshed. Telethon's max_id is exclusive.
+        # The caller supplies one frozen snapshot for this group's execution.
+        # Telethon's max_id is exclusive, hence upper + 1 here.
         if plan.group.latest_message_id > 0:
             kwargs["max_id"] = plan.group.latest_message_id + 1
     elif plan.mode is ExportMode.SINCE_LAST_EXPORT:
