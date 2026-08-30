@@ -101,7 +101,7 @@ class MainWindow(BaseMainWindow):
             self._show_message(QMessageBox.Warning, "配置无效", "API ID 和 API Hash 不能为空。")
             return False
         write_json_atomic(credentials_path(), {"api_id": creds.api_id, "api_hash": creds.api_hash})
-        logger.info("Telegram API credentials saved locally (api_id=%s; api_hash not logged)", creds.api_id)
+        logger.info("Telegram API credentials saved locally")
         return True
 
     async def _load_credentials_async(self) -> ApiCredentials | None:
@@ -208,7 +208,7 @@ class MainWindow(BaseMainWindow):
         if not creds:
             return
         self._set_busy(True, "正在连接 Telegram 后台…")
-        logger.info("User started Telegram daemon connection (api_id=%s)", creds.api_id)
+        logger.info("User started Telegram daemon connection")
         try:
             service = await self._ensure_daemon_proxy()
             auth = await service.auth_status()
@@ -233,12 +233,14 @@ class MainWindow(BaseMainWindow):
             self._set_busy(False)
 
     def _show_error(self, exc: Exception) -> None:
-        logger.error("GUI operation failed", exc_info=(type(exc), exc, exc.__traceback__))
+        # Do not log raw exception messages here: Telegram/auth exceptions may
+        # contain request-specific data. The safe type + friendly diagnostic is
+        # enough for ordinary logs/UI.
+        logger.error("GUI operation failed error_type=%s", type(exc).__name__)
         friendly = friendly_error_message(exc)
-        raw = f"{type(exc).__name__}: {exc}"
         self.status.setText("操作失败。可点击『打开日志目录』查看详细日志。")
         self._show_message(
             QMessageBox.Critical,
             "Telegram 操作失败",
-            f"{friendly}\n\n原始错误：{raw}\n\n日志文件：\n{log_file_path()}",
+            f"{friendly}\n\n错误类型：{type(exc).__name__}\n\n日志文件：\n{log_file_path()}",
         )
