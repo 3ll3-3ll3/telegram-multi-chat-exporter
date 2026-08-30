@@ -1,20 +1,26 @@
 # Security Policy
 
-TG Exporter 处理真实 Telegram 用户账号 Session、聊天文本与 Telegram 写操作，因此默认采用：**本地最小权限、最少持久化、显式写入边界、可审计但不记录正文**。
+TG Exporter 处理真实 Telegram 用户账号 Session、聊天正文与少量显式副作用，因此默认采用：**本地最小权限、单 Session 所有权、默认只读、最少持久化、显式写入边界、可审计但普通日志不记录正文**。
 
-## Sensitive data that must stay local
+## Sensitive data must stay local
 
-以下内容不得提交到 GitHub、Issue、PR、CI log 或公开文档：
+以下内容不得提交到 GitHub、Issue、PR、CI log、普通 app log 或公开文档：
 
-- Telegram `api_hash`
-- 手机号
-- 登录验证码 / OTP
-- 2FA 密码
-- `*.session` / session journal / Session 内容
-- 用户真实聊天正文或导出文件
-- 用户真实群头像缓存二进制
+- Telegram `api_id` / `api_hash`；
+- 手机号；
+- OTP / 登录验证码；
+- 2FA 密码；
+- `*.session` / session journal / Session 内容；
+- credentials 原文；
+- IPC auth secret；
+- Telegram `access_hash`；
+- Telegram `file_reference` bytes；
+- 用户真实聊天正文/导出文件；
+- 用户真实头像 cache 二进制。
 
-## Local runtime files
+用户明确执行 reader 命令时，消息正文可出现在该命令 stdout JSON/JSONL；这不等于允许把正文写进普通日志。
+
+## Local runtime
 
 兼容目录固定：
 
@@ -22,158 +28,121 @@ TG Exporter 处理真实 Telegram 用户账号 Session、聊天文本与 Telegra
 %APPDATA%\TelegramMultiChatExporter\
 ```
 
-可能包含：
+可能含：`api_credentials.json`、`telegram.session`、journal/lock、settings/state、`logs\app.log`、avatar cache、daemon identity/job metadata。
+
+这些都不是发布资产。不得通过删除 lock 文件绕过 OS lock。
+
+## v0.3 daemon trust boundary
 
 ```text
-api_credentials.json
-telegram.session
-telegram.session-journal
-telegram.session.lock
-local_state.json
-settings.json
-logs\app.log
-cache\avatars\*
+GUI ─┐
+     ├→ authenticated local Named Pipe → TG daemon → Telegram Session
+tgctl┘
 ```
 
-这些都不是发布资产。品牌改名不得擅自迁移该目录导致 Session/设置失效。
+- daemon 是唯一 TelegramClient/Session owner；
+- GUI/tgctl 不 fallback direct Session；
+- Pipe 只传 UTF-8 JSON bytes，禁止 pickle object transport；
+- 不开放 TCP/HTTP；
+- local IPC auth secret 不 stdout、不 log、不 Git；
+- 旧 direct process 已锁 Session 时安全返回 `SESSION_BUSY`，不得抢锁/复制 Session。
 
-`telegram.session.lock` 只是 Session ownership 的锁载体；安全性来自 OS-level file lock，不从文件存在性推断占用，也不得通过删 lock file 绕过并发保护。
+## Logging allowlist
 
-## Logging rules
+普通日志允许：动作/阶段、safe error class/code、proxy safe label、chat/message/topic safe IDs、数量、耗时、text length、成功/失败。
 
-日志允许记录：
+普通日志禁止：
 
-- 阶段/动作类型；
-- 安全的 error type/message；
-- proxy safe label / host / port；
-- api_id（不是 api_hash）；
-- chat_id / message_id；
-- 数量、text length、成功/失败；
-- catalogue migration collapse count。
-
-日志禁止记录：
-
-- api_hash；
+- api_id / api_hash；
 - phone / OTP / 2FA；
-- Session 内容；
-- **message body**；
-- 头像二进制/base64。
+- Session/credentials/IPC secret；
+- access_hash/file_reference；
+- message body/caption；
+- URL 文本；
+- media filename；
+- raw TL object repr（除非经过明确 safe mapper）。
 
-`tgctl messages search/get --json` 返回的消息正文属于用户明确请求的 stdout 数据，可以输出给调用者，但不得复制进普通 `app.log`。
+新增异常日志前先确认 `repr(exc/object)` 不会包含上述字段。Reader 对 Telegram RPC 错误优先返回安全错误类型名，而不是 raw TL repr。
 
-新增 debug 日志前必须检查对象的 `repr()` 是否可能泄露正文或 Secret。
+## Default reader is Telegram read-only
 
-## Telegram read operations
-
-以下 `tgctl` 命令属于 read operation，可直接执行：
-
-```text
-status
-chats list
-messages search
-messages get
-```
-
-它们不得偷偷发送 read acknowledgement、消息、转发或其他 Telegram 写入。
-
-GUI 的刷新、Chat Folder、头像读取、普通导出同样默认不改变 Telegram read marker。
-
-## Telegram write operations
-
-v0.1.9 起，用户明确授权第一版 `tgctl` 提供两类写操作：
+以下第三代能力不得产生 Telegram write/read-ack：
 
 ```text
-forward
-send
+account get
+dialogs list
+chats get
+chats members
+messages history/search/get
+topics list/history
+media metadata
 ```
 
-### forward
+它们不得发送、转发、删除、退群、改 Chat Folder、投票、标已读或自动下载媒体。读取不应推进 Telegram read marker。
 
-- 必须使用 Telethon 真正 `forward_messages`；
-- 不得静默变成“读取正文 → send_message”；
-- 第一版只允许纯文本/普通网页预览消息；媒体消息不真正转发；
-- 支持 `--to me` Saved Messages；
-- 支持 `--dry-run`；
-- 默认最多 20 条；显式 `--allow-large-batch` 后最多 200 条；
-- 同名 chat 必须返回 `AMBIGUOUS_CHAT`，不得 first-match；
-- FloodWait 不做自动 retry storm。
+Secret Chat、已删除内容恢复、账号无权访问内容不尝试绕过。
 
-### send
+## Explicit media download
 
-- 第一版只发送用户命令中显式提供的纯文本；
-- `parse_mode=None`；
-- 不发送文件、图片、语音等媒体；
-- 支持 `--dry-run`；
-- 日志只记目标、安全 id、text length、结果，不记正文。
+`media download` 是**本地磁盘写入**，不是 Telegram 写入，但仍必须显式授权：
 
-### Codex safety invariant
+1. 用户提供 chat/ids/output；
+2. 第一次只生成 plan，返回 `DOWNLOAD_CONFIRMATION_REQUIRED`、数量、已知预计字节、未知大小数量、confirmation token；不创建 output dir、不下载；
+3. 第二次必须带同一 query/plan 的短时 HMAC token；
+4. normal：20 files / 500 MiB；explicit large：最多 200 files / 5 GiB；hard cap 不可绕过；
+5. filename 只取 basename 并做 Windows/path traversal 安全化；
+6. 写 `.part`，成功后原子 rename；错误/取消清理当前 `.part`；
+7. confirmed IPC request 的 transport outcome unknown 不自动 retry。
 
-未来 Agent/Codex 集成**不得擅自绕过**：
+普通 reader 永远不因为“看见有媒体”而自动下载。
 
-```text
-dry-run capability
-forward batch limits
-chat ambiguity rejection
-FloodWait structured stop
-Session lock
-no-message-body logging
-```
+## Existing Telegram writes
 
-本 CLI 不弹 GUI 确认，以便 Codex 可调用；推荐产品交互是：**先 dry-run → 把结果给用户看 → 用户明确确认 → 再执行真实写操作**。
+已批准的 Telegram write 仍只有既有边界：
 
-不要自行对陌生人/陌生群做真人写测试。真实 E2E 优先 Saved Messages。
+- `forward`：真正 Telethon forward，dry-run，默认 20、显式大批量 200，同名歧义拒绝；
+- `send`：纯文本，dry-run，`parse_mode=None`；
+- GUI optional read-ack：仅用户明确开启 current-unread Option B，严格 `JSON success → checkpoint → optional read ack`。
 
-## GUI read acknowledgement
+v0.3 Reader 不扩大上述授权，不新增隐式 mark-read。
 
-GUI 的 `导出后标已读` 是另一类已有写操作，仅在用户按群明确开启 current-unread Option B 后执行：
+Export 活跃时真实 send/forward 立即 `EXPORT_IN_PROGRESS`，不得排队后自动发出。已发送 write 请求若返回前 transport 中断 → `WRITE_OUTCOME_UNKNOWN`，不得自动 retry。
 
-```text
-JSON success → checkpoint success → optional read ack
-```
+FloodWait 返回 `retry_after_seconds`，不 retry storm。
 
-导出失败绝不改变 read marker。tgctl v0.1.9 不提供 mark-read 命令；未来若增加必须重新套用明确 write-operation 安全边界。
+## Identity truthfulness
 
-## Shared Session ownership
+- owner/admin/member 只能依据 Telegram participant/admin data；
+- role 表示查询时 current snapshot，不伪造历史管理员任期；
+- anonymous admin/send-as 不从显示名、post_author 或管理员列表猜隐藏 user；
+- 成员不可枚举时返回 unavailable/access denied，不拿消息作者集合冒充完整成员表；
+- URL domain 只做安全 hostname parsing，不访问链接、不 follow redirect。
 
-Telethon 默认 SQLiteSession 不允许 GUI/tgctl 两个进程并发拥有同一 Session。
+## Cursor/output safety
 
-v0.1.9 起由 `TelegramService` 获取 OS-level `SessionLease`：
+Cursor 必须 HMAC/query-bound，只包含 safe offset/peer IDs/segment 等；不得带 access_hash、file_reference、Session/credentials。
 
-- GUI 占用时 tgctl 返回 `SESSION_BUSY`；
-- tgctl 占用时 GUI 给出友好 busy 错误；
-- 不复制 Session、不建立隐藏第二 Session、不绕过锁。
+MessageInfoV3/ChatDetails/DialogInfo/ParticipantInfo 使用 allowlisted safe fields，不序列化 raw Telethon object。
 
-未来 MCP/多客户端并发应采用 **single local Telegram daemon owns Session + IPC**，而不是让每个客户端自己打开 SQLiteSession。
+`MESSAGE_NOT_FOUND` 只能表示 not found/unavailable，不能武断声称内容“已删除”。
 
-## Build and release
+## CI / real E2E
 
-GitHub Actions 不需要 Telegram Secret。CI 的 Telegram write tests 必须 mock Telethon；不得把真实账号凭据放进 Actions Secret 来跑写操作 E2E。
+GitHub Actions 不保存真实 Telegram credential。CI 使用 mock/fake Telegram + 本地 OS lock 测试：
 
-正式发布资产从 v0.1.9 起至少包括：
+- no api credential/message body logging；
+- cursor/output no access_hash/file_reference；
+- media plan no disk write；
+- packaged UTF-8 JSON；
+- legacy OS Session lock → packaged `SESSION_BUSY` + native exit 8；
+- PyInstaller smoke。
 
-```text
-TGExporter-vX.Y.Z-windows-x64.exe
-TGExporter-vX.Y.Z-windows-x64-portable.zip
-tgctl.exe
-SHA256SUMS.txt
-```
+Mock 不能代替用户真实账号只读 E2E。真实测试默认不执行 Telegram write；媒体真实下载作为本地磁盘副作用也只在用户明确选择测试时进行。
 
-正式入口：
+## Out of scope
 
-```text
-https://github.com/3ll3-3ll3/tg-exporter/releases/latest
-```
+除非用户重新明确授权并重新做安全设计，不增加：MCP Server、Web/TCP server、Bot API、24/7 Telegram listener、自动转发规则、AI 自主分类、联系人/群/管理员管理、删除消息、退群、改 Chat Folder、媒体发送/媒体转发、绕权读取、Secret Chat。
 
-## Explicitly out of scope
+## Accidental secret response
 
-当前不得顺手增加：MCP、Web Server、云端 Telegram 服务、Bot API、24/7 listener、自动转发规则、AI 分类器、联系人/群/管理员管理、消息删除、媒体发送/媒体转发、360 绕过或代码签名。
-
-## Vulnerability / accidental secret response
-
-如果发现 Secret 被误提交：
-
-1. 立即停止传播。
-2. 不要认为普通删除 commit 就足够，Git 历史可能仍包含数据。
-3. 撤销/轮换凭据或 Session。
-4. 清理 Git 历史或走 GitHub 敏感数据处理流程。
-5. 在 `HANDOFF.md` 记录非敏感事件摘要与后续要求。
+发现 Secret 误提交时：立即停止传播；轮换相关 credential/Session；必要时清理 Git 历史；在 HANDOFF 只记录非敏感摘要，不复制 Secret。
