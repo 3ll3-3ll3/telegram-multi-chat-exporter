@@ -3,17 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .exporter import export_group
+from .models import ExportMode
 from .operation_coordinator import OperationCoordinator
 from .paths import daemon_job_state_path, state_path
 from .read_state import mark_unread_snapshot_read
 from .rpc_models import plan_from_dict
 from .storage import LocalState, read_json, write_json_atomic
 from .telegram_service import TelegramService
+from .unread_snapshot import capture_current_unread_snapshot
 
 logger = logging.getLogger("telegram_exporter.export_coordinator")
 
@@ -171,10 +174,21 @@ class ExportCoordinator:
                 def progress(done: int, _total: int | None) -> None:
                     job["current_message_count"] = int(done)
 
+                execution_plan = plan
                 try:
+                    # "Current unread" is defined at the moment this specific
+                    # group actually starts executing, not when the catalogue
+                    # was loaded or when the whole batch was submitted.  Export
+                    # and optional read acknowledgement must share this exact
+                    # frozen copy so messages arriving afterwards stay outside
+                    # this run and remain unacknowledged by it.
+                    if plan.mode is ExportMode.UNREAD:
+                        snapshot_group = await capture_current_unread_snapshot(service.client, plan.group)
+                        execution_plan = replace(plan, group=snapshot_group)
+
                     result = await export_group(
                         service.client,
-                        plan,
+                        execution_plan,
                         output_root,
                         progress=progress,
                         export_moment=export_moment,
@@ -189,7 +203,7 @@ class ExportCoordinator:
                     read_ack = "skipped"
                     if mark_read_after_export:
                         try:
-                            acknowledged = await mark_unread_snapshot_read(service.client, plan.group)
+                            acknowledged = await mark_unread_snapshot_read(service.client, execution_plan.group)
                             if acknowledged is not None:
                                 read_ack = "success"
                                 job["marked_read_count"] += 1
@@ -198,13 +212,17 @@ class ExportCoordinator:
                         except Exception as exc:
                             logger.error(
                                 "Read acknowledgement failed after daemon export for chat_id=%s",
-                                plan.group.chat_id,
+                                execution_plan.group.chat_id,
                                 exc_info=(type(exc), exc, exc.__traceback__),
                             )
                             read_ack = "failed"
                             job["read_failure_count"] += 1
                             job["read_failures"].append(
-                                {"chat_id": plan.group.chat_id, "title": plan.group.title, "error": type(exc).__name__}
+                                {
+                                    "chat_id": execution_plan.group.chat_id,
+                                    "title": execution_plan.group.title,
+                                    "error": type(exc).__name__,
+                                }
                             )
 
                     job["results"].append(
