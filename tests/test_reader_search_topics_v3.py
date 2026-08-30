@@ -116,6 +116,7 @@ class ForumTopic:
 class ForumClient:
     async def __call__(self, request):
         assert type(request).__name__ == "GetForumTopicsRequest"
+        assert hasattr(request, "peer")
         all_topics = [ForumTopic(1, "General", 101), ForumTopic(2, "PikPak", 102), ForumTopic(3, "News", 103)]
         if int(getattr(request, "offset_topic", 0) or 0) == 2:
             topics = all_topics[2:]
@@ -180,8 +181,8 @@ def test_search_cursor_continues_without_overlap(monkeypatch) -> None:
 
 
 def test_telethon_forum_request_signature_is_available() -> None:
-    request = functions.channels.GetForumTopicsRequest(
-        channel=types.InputChannel(channel_id=77, access_hash=123),
+    request = functions.messages.GetForumTopicsRequest(
+        peer=types.InputChannel(channel_id=77, access_hash=123),
         q=None,
         offset_date=None,
         offset_id=0,
@@ -189,6 +190,7 @@ def test_telethon_forum_request_signature_is_available() -> None:
         limit=10,
     )
     assert request.limit == 10
+    assert type(request.peer).__name__ == "InputChannel"
 
 
 def test_topics_list_returns_bounded_page_and_cursor() -> None:
