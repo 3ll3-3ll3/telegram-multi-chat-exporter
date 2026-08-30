@@ -20,44 +20,45 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Install in clean runner environment
+      - name: Create isolated project virtualenv and install
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 
       - name: Full pytest
-        run: python -m pytest -q
+        run: .\.venv\Scripts\python.exe -m pytest -q
 
       - name: Explicit v0.3.1 regressions
-        run: python -m pytest -q tests/test_domain_filter_v031.py tests/test_gui_shutdown_v031.py tests/test_reader_sender_v031.py
+        run: .\.venv\Scripts\python.exe -m pytest -q tests/test_domain_filter_v031.py tests/test_gui_shutdown_v031.py tests/test_reader_sender_v031.py
 
       - name: Compile source
-        run: python -m compileall src
+        run: .\.venv\Scripts\python.exe -m compileall src
 
       - name: Diff whitespace check
         run: git diff --check
 
       - name: GUI + daemon + reader + CLI import check
-        run: python -c "import telegram_exporter.daemon_gui; import telegram_exporter.daemon_main; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_runtime; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + daemon + tgctl + reader import OK')"
+        run: .\.venv\Scripts\python.exe -c "import telegram_exporter.daemon_gui; import telegram_exporter.daemon_main; import telegram_exporter.tgctl; import telegram_exporter.reader_service; import telegram_exporter.reader_runtime; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; print('GUI + daemon + tgctl + reader import OK')"
 
       - name: Source url-domain offline smoke
-        run: python tgctl_launcher.py --smoke-test-url-domain
+        run: .\.venv\Scripts\python.exe tgctl_launcher.py --smoke-test-url-domain
 
       - name: Build one-file TGExporter EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --paths src --name TGExporter --distpath dist\onefile --workpath build\onefile launcher.py
+          .\.venv\Scripts\pyinstaller.exe --noconfirm --clean --windowed --onefile --paths src --name TGExporter --distpath dist\onefile --workpath build\onefile launcher.py
 
       - name: Build portable TGExporter onedir
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onedir --paths src --name TGExporter --distpath dist\portable --workpath build\portable launcher.py
+          .\.venv\Scripts\pyinstaller.exe --noconfirm --clean --windowed --onedir --paths src --name TGExporter --distpath dist\portable --workpath build\portable launcher.py
 
       - name: Build tgctl EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --console --onefile --paths src --hidden-import encodings.idna --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
+          .\.venv\Scripts\pyinstaller.exe --noconfirm --clean --console --onefile --paths src --hidden-import encodings.idna --name tgctl --distpath dist\tgctl --workpath build\tgctl tgctl_launcher.py
           Copy-Item .\dist\tgctl\tgctl.exe .\dist\portable\TGExporter\tgctl.exe
 
       - name: Packaged url-domain offline regression
@@ -83,7 +84,8 @@ jobs:
 
             $readyFile = Join-Path $env:RUNNER_TEMP "tgctl-v3-session-lock-ready.txt"
             Remove-Item -Force $readyFile -ErrorAction SilentlyContinue
-            $holder = Start-Process python -ArgumentList @("tests\helpers\hold_session_lock.py", $readyFile) -PassThru -WindowStyle Hidden
+            $pythonExe = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+            $holder = Start-Process $pythonExe -ArgumentList @("tests\helpers\hold_session_lock.py", $readyFile) -PassThru -WindowStyle Hidden
 
             for ($i = 0; $i -lt 50 -and -not (Test-Path $readyFile); $i++) {
               Start-Sleep -Milliseconds 100
@@ -141,6 +143,15 @@ jobs:
           & .\dist\portable\TGExporter\tgctl.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify repository worktree remains clean
+        shell: pwsh
+        run: |
+          $dirty = git status --porcelain --untracked-files=all
+          if ($dirty) {
+            Write-Host $dirty
+            throw "Repository worktree became dirty during validation"
+          }
+
       - name: Prepare v0.3.1 candidate assets and SHA-256
         shell: pwsh
         run: |
@@ -162,15 +173,6 @@ jobs:
           Write-Host "TGExporter v0.3.1 candidate SHA-256: $guiHash"
           Write-Host "Portable v0.3.1 candidate SHA-256: $zipHash"
           Write-Host "tgctl v0.3.1 candidate SHA-256: $cliHash"
-
-      - name: Verify tracked worktree remains clean
-        shell: pwsh
-        run: |
-          $dirty = git status --porcelain --untracked-files=no
-          if ($dirty) {
-            Write-Host $dirty
-            throw "Tracked worktree became dirty during validation"
-          }
 
       - name: Upload v0.3.1 candidate assets
         uses: actions/upload-artifact@v4
