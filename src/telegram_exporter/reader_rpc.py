@@ -4,8 +4,8 @@ from datetime import datetime
 from typing import Any
 
 from .bridge_errors import INVALID_ARGUMENT, TelegramBridgeError
+from .reader_runtime import PersonalAccountReaderV3
 from .reader_search import search_messages_page
-from .reader_service import PersonalAccountReader
 from .reader_topics import topic_history_page, topics_page
 
 READER_METHODS = {
@@ -31,11 +31,11 @@ def _parse_iso(value: Any) -> datetime | None:
     return parsed
 
 
-async def _reader(server: Any) -> PersonalAccountReader:
+async def _reader(server: Any) -> PersonalAccountReaderV3:
     service = await server._authorized_service()
     current = getattr(server, "_v3_reader", None)
     if current is None or current.telegram_service is not service:
-        current = PersonalAccountReader(service)
+        current = PersonalAccountReaderV3(service)
         server._v3_reader = current
     return current
 
