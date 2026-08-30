@@ -19,32 +19,56 @@ TERMINAL_JOB_STATES = {"completed", "completed_with_failures", "failed", "interr
 
 
 class MainWindow(FocusedMainWindow):
-    """Production v0.2.0 window backed by the single Telegram daemon."""
+    """Production window backed by the single Telegram daemon."""
 
     def __init__(self):
         super().__init__()
         self._active_job_id: str | None = None
         self._job_monitor_task: asyncio.Task[None] | None = None
+        self._initialize_task: asyncio.Task[None] | None = None
+        self._shutdown_started = False
         QTimer.singleShot(0, self._schedule_daemon_initialize)
 
     def _schedule_daemon_initialize(self) -> None:
+        if self._shutdown_started:
+            return
         try:
-            asyncio.get_running_loop().create_task(self._initialize_daemon(), name="tg-gui-daemon-init")
+            task = asyncio.get_running_loop().create_task(self._initialize_daemon(), name="tg-gui-daemon-init")
+            self._initialize_task = task
+            task.add_done_callback(self._initialize_done)
         except RuntimeError:
             logger.warning("GUI daemon initialization could not find qasync loop")
+
+    def _initialize_done(self, task: asyncio.Task[None]) -> None:
+        if self._initialize_task is task:
+            self._initialize_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            # _initialize_daemon normally handles recoverable attach/status
+            # failures itself. This only catches an unexpected programming
+            # failure so it is not silently lost as an un-retrieved task error.
+            logger.exception("Unexpected GUI daemon initialization task failure")
 
     async def _initialize_daemon(self) -> None:
         try:
             service = await self._ensure_daemon_proxy()
+            if self._shutdown_started:
+                return
             jobs = await service.list_export_jobs()
+            if self._shutdown_started:
+                return
             active = next((job for job in jobs if job.get("state") in {"queued", "running"}), None)
 
             # A restarted GUI must be able to recover an active export
-            # immediately.  auth.status is a Telegram read and, by the user's
-            # 3B policy, intentionally waits for export completion.  Therefore
-            # only consult the daemon's local status here while a job is active.
+            # immediately. auth.status is a Telegram read and intentionally
+            # waits for export completion, so only use local daemon status here.
             if active:
                 daemon_status = await service.daemon_status()
+                if self._shutdown_started:
+                    return
                 if daemon_status.get("authorized"):
                     self.connect_btn.setText("Telegram 已连接")
                     self.refresh_btn.setEnabled(True)
@@ -54,6 +78,8 @@ class MainWindow(FocusedMainWindow):
                 return
 
             auth = await service.auth_status()
+            if self._shutdown_started:
+                return
             if auth.get("authorized"):
                 self.connect_btn.setText("Telegram 已连接")
                 self.refresh_btn.setEnabled(True)
@@ -68,13 +94,17 @@ class MainWindow(FocusedMainWindow):
                 self.status.setText("Telegram 后台已连接。可刷新群组目录。")
             else:
                 self.status.setText("TG 后台已启动；Telegram 尚未登录。请点击『连接 Telegram』。")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            if self._shutdown_started:
+                return
             logger.warning("Initial daemon attach/status failed", exc_info=(type(exc), exc, exc.__traceback__))
             self.status.setText("TG 后台暂未就绪；点击『连接 Telegram』时会再次尝试启动。")
 
     @asyncSlot()
     async def start_export(self) -> None:
-        if self._busy:
+        if self._busy or self._shutdown_started:
             return
         service = self.service
         if not isinstance(service, DaemonTelegramProxy):
@@ -122,6 +152,8 @@ class MainWindow(FocusedMainWindow):
         self._start_job_monitor(self._active_job_id, restored=False)
 
     def _start_job_monitor(self, job_id: str, *, restored: bool) -> None:
+        if self._shutdown_started:
+            return
         task = self._job_monitor_task
         if task is not None and not task.done():
             task.cancel()
@@ -136,7 +168,7 @@ class MainWindow(FocusedMainWindow):
             return
         terminal: dict | None = None
         try:
-            while True:
+            while not self._shutdown_started:
                 job = await service.export_job_status(job_id)
                 state = str(job.get("state"))
                 total = int(job.get("total_groups", 0))
@@ -159,13 +191,16 @@ class MainWindow(FocusedMainWindow):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error("GUI export job monitor failed", exc_info=(type(exc), exc, exc.__traceback__))
-            self._set_busy(False, "后台任务状态读取失败；可重新打开程序恢复查看。")
+            if not self._shutdown_started:
+                logger.error("GUI export job monitor failed", exc_info=(type(exc), exc, exc.__traceback__))
+                self._set_busy(False, "后台任务状态读取失败；可重新打开程序恢复查看。")
             return
         finally:
             if self._job_monitor_task is asyncio.current_task():
                 self._job_monitor_task = None
 
+        if self._shutdown_started:
+            return
         self._active_job_id = None
         self._set_busy(False)
         if terminal is not None:
@@ -246,14 +281,19 @@ class MainWindow(FocusedMainWindow):
         )
 
     async def shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         logger.info("GUI shutdown: detach from daemon; active export is not cancelled")
-        task = self._job_monitor_task
+
+        tasks = [self._initialize_task, self._job_monitor_task]
+        self._initialize_task = None
         self._job_monitor_task = None
-        if task is not None and not task.done():
+        pending = [task for task in tasks if task is not None and not task.done()]
+        for task in pending:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
         if isinstance(self.service, DaemonTelegramProxy):
             await self.service.close()
