@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
@@ -79,10 +80,27 @@ QProgressBar::chunk {
 """
 
 
-async def _run_app(app: QApplication) -> int:
+async def _run_app(
+    app: QApplication,
+    *,
+    window_factory: Callable[[], MainWindow] = MainWindow,
+) -> int:
+    """Run one GUI lifetime without stopping qasync before cleanup completes.
+
+    qasync's QEventLoop is backed by QApplication.exec(). If Qt auto-quits as
+    soon as the last window closes, ``asyncio.run`` sees the underlying loop
+    stop while this coroutine is still waiting to run shutdown cleanup and
+    raises ``RuntimeError: Event loop stopped before Future completed``.
+
+    Keep the Qt application alive after the last window closes, perform all GUI
+    detach/cancellation work, then simply return. ``run_until_complete`` stops
+    the event loop *after* this future is complete, which is the safe order.
+    """
+
     close_event = asyncio.Event()
-    app.aboutToQuit.connect(close_event.set)
-    window = MainWindow()
+    app.setQuitOnLastWindowClosed(False)
+    app.lastWindowClosed.connect(close_event.set)
+    window = window_factory()
     window.setWindowTitle("TG 导出器")
     window.show()
     await close_event.wait()
@@ -90,6 +108,12 @@ async def _run_app(app: QApplication) -> int:
         await window.shutdown()
     except Exception:
         logging.getLogger("telegram_exporter").exception("Application shutdown cleanup failed")
+        raise
+    finally:
+        try:
+            app.lastWindowClosed.disconnect(close_event.set)
+        except (RuntimeError, TypeError):
+            pass
     return 0
 
 
