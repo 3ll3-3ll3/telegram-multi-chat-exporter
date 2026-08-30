@@ -163,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
     topics_history.add_argument("--until")
     _add_page_output_flags(topics_history)
 
+    media = sub.add_parser("media")
+    media_sub = media.add_subparsers(dest="media_command", required=True)
+    media_download = media_sub.add_parser("download")
+    media_download.add_argument("--chat", required=True)
+    media_download.add_argument("--ids", nargs="+", type=int, required=True)
+    media_download.add_argument("--output", required=True)
+    media_download.add_argument("--confirm")
+    media_download.add_argument("--allow-large-download", action="store_true")
+    _add_json_flag(media_download)
+
     forward = sub.add_parser("forward")
     forward.add_argument("--from", dest="source_chat", required=True)
     forward.add_argument("--to", dest="destination_chat", required=True)
@@ -459,6 +469,23 @@ async def run_command(args: argparse.Namespace) -> dict[str, Any]:
                     "since": since.isoformat() if since else None,
                     "until": until.isoformat() if until else None,
                 },
+            )
+        )
+
+    if args.command == "media" and args.media_command == "download":
+        confirmed = bool(args.confirm)
+        return success(
+            await proxy.ipc.request(
+                "media.download",
+                {
+                    "chat": args.chat,
+                    "ids": args.ids,
+                    "output": args.output,
+                    "confirm": args.confirm,
+                    "allow_large_download": args.allow_large_download,
+                },
+                side_effect_after_send=confirmed,
+                retry_read_once=not confirmed,
             )
         )
 
