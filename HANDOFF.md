@@ -4,52 +4,52 @@
 
 # Current Project State
 
-**Last updated:** 2026-08-30 14:00 +08:00  
+**Last updated:** 2026-08-30 14:35 +08:00  
 **Repository:** `3ll3-3ll3/tg-exporter`  
 **Default branch:** `main`  
 **Production version:** `v0.1.10`  
 **Production commit/tag:** `cedb02035597aa607fac399666154519f480c431` / `v0.1.10`  
 **Current development version:** `v0.3.0` Candidate  
 **Current development branch:** `codex/personal-account-reader-v0.3.0`  
-**Current development branch tip at audit:** `7282326e3ce51a294b90840e9cf7c965ad304fc7`  
-**Frozen pre-KI-001 runtime candidate:** `0ad4219ef367d28326b5aca705fffe1d007db52b`  
-**Current task:** fix KI-001 current-unread snapshot timing → new Candidate → real Telegram E2E  
-**Related Issue:** #22 `fix: snapshot current unread at each group's export start`  
-**Related PR:** Draft PR #20 `feat: v0.3.0 personal account reader candidate`  
-**Handoff docs PR:** #21 `docs: persist project context for AI handoff`  
-**Release gate:** no PR #20 merge / no v0.3.0 Release until #22 fixed + human E2E PASS + explicit user release authorization
+**Implementation PR:** Draft PR #20 `feat: v0.3.0 personal account reader candidate`  
+**Handoff docs PR:** PR #21 `docs: persist project context for AI handoff`  
+**Issue #22 / KI-001:** **CLOSED / fixed**  
+**Frozen human-E2E runtime Candidate:** `7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c`  
+**Windows Candidate run:** `33296790070 = success`  
+**pytest:** `95 passed`  
+**Artifact:** `9727721868`  
+**Current task:** 用户本机真实 Telegram 账号 v0.3 E2E；测试前不再加功能  
+**Release gate:** PR #20 不 merge；不创建/覆盖 `v0.3.0` Release，直到真人 E2E PASS + 用户明确发布授权
 
 ## Source-of-truth warning
 
-`main` is the formal Production line, not the newest runtime. v0.3 daemon/reader implementation is in PR #20.
+`main` 是正式 Production 线，不是最新 runtime。v0.3 daemon/reader 实现在 PR #20。
 
-Historical Draft PRs #17 (daemon design) and #19 (reader design) are design references already absorbed by #20; they are not current implementation entry points. Old branch `docs/agent-handoff` is also historical.
+历史 Draft PR #17（daemon design）和 #19（reader design）已经被 #20 吸收，仅是设计依据，不是继续实现入口。
 
 # Project Summary
 
-TG Exporter / TG 导出器 is a Windows-local Telegram tool:
+TG Exporter / TG 导出器是 Windows 本地 Telegram 工具：
 
-- GUI: export multiple selected chats independently to text/caption JSON;
-- `tgctl`: Codex/CLI machine interface for reads/search plus bounded true-forward/plain-text send;
-- v0.2/v0.3: one local daemon owns Telegram Session, GUI/tgctl use local IPC;
-- v0.3 Personal Account Reader: paged account/dialog/member/rich-message/Forum/Saved Messages/media-metadata access plus explicit two-stage local media download.
+- GUI：多群独立 text/caption JSON 导出；
+- `tgctl`：供 Codex/CLI 读取、搜索，以及在安全边界内 true-forward / pure-text send；
+- v0.2/v0.3：single daemon 唯一拥有 Telegram Session，GUI/tgctl 走本地 IPC；
+- v0.3 Personal Account Reader：分页读取账号、dialogs、成员/管理员、rich messages、Forum、Saved Messages、media metadata，并提供显式两阶段本地媒体下载。
 
-It is not Telegram Desktop replacement, cumulative archive DB, cloud service, Bot API app, or 24/7 autonomous agent.
+它不是 Telegram Desktop 替代品、累计数据库、云服务、Bot API 应用或 24/7 自主 Agent。
 
 # Production Definition
 
-There is no remote production DB/server/cloud runtime. Production means:
+本项目没有远程 Production DB/server/cloud runtime。Production 指：
 
-1. formal GitHub Release Windows binaries;
-2. user-local `%APPDATA%\TelegramMultiChatExporter\` Session/config/state/log/cache;
-3. the user's real Telegram account;
-4. user-selected export folders.
+1. GitHub 正式 Release Windows 二进制；
+2. 用户本机 `%APPDATA%\TelegramMultiChatExporter\` Session/config/state/log/cache；
+3. 用户真实 Telegram 账号；
+4. 用户选择的本地导出目录。
 
 # Production Version
 
-Latest formal Release: **v0.1.10**, target `cedb02035597aa607fac399666154519f480c431`.
-
-`https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.1.10`
+Latest formal Release：**v0.1.10**，target `cedb02035597aa607fac399666154519f480c431`。
 
 ```text
 TGExporter-v0.1.10-windows-x64.exe
@@ -62,7 +62,7 @@ tgctl.exe
 sha256 ebd6cd8898f51aa9e63a7efa6292a70df0afe15cd5efe99b7fc4be9bbf2f5efa
 ```
 
-v0.1.10 fixes packaged Windows non-UTF-8 Chinese JSON error handling so `SESSION_BUSY` retains native exit code 8. The fix/regressions were forward-ported to v0.3 Candidate.
+v0.1.10 修复 packaged Windows 非 UTF-8 console 下中文 JSON error 导致 `SESSION_BUSY` native exit 8 退化为 exit 1 的问题；该修复与 regression 已 forward-port 到 v0.3。
 
 # Current Architecture
 
@@ -74,7 +74,7 @@ GUI ─┐
  tgctl┘
 ```
 
-OS `SessionLease` prevents concurrent direct ownership. Never bypass/copy the Session.
+OS `SessionLease` 防止并发 direct ownership。不得绕过/复制 Session。
 
 ## Candidate v0.3
 
@@ -84,7 +84,7 @@ GUI ─┐
  tgctl┘
 ```
 
-Daemon is the only Session owner. Same-generation GUI + tgctl coexist; `SESSION_BUSY` is only a compatibility boundary when an old direct process already owns the Session.
+Daemon 是唯一 Session owner。同代 GUI + tgctl 正常共存；`SESSION_BUSY` 只用于 legacy/direct process 已持有 SessionLease 的兼容边界。
 
 ```text
 LOCAL status/job/heartbeat       → immediate
@@ -93,33 +93,50 @@ reader                           → waits during export
 real send/forward during export  → EXPORT_IN_PROGRESS, never queued
 ```
 
-See `docs/ARCHITECTURE.md`, `docs/SECURITY_MODEL.md`, ADRs, and PR #20 design docs.
-
 # Core Product Invariants
 
-- output: `root / Export Category / group / YYYY-MM-DD_HH-mm-ss.json`; same-second `_2/_3/...`;
-- Export Category is local software state, not Telegram Chat Folder; deleting a category does not delete old files;
-- each JSON independent; do not read/merge/overwrite historical exports;
-- GUI message export is text/caption only; group avatar is UI-cache exception;
-- Basic Group→Supergroup shows one current logical group; legacy peer is historical source only;
-- current-unread requires a deterministic frozen snapshot; **accepted timing is each group's export start (ADR-007), not catalogue refresh**;
-- mark-read default OFF; `JSON atomic success → checkpoint → optional read ack`;
-- async Qt/Telethon uses qasync non-blocking dialogs; do not reintroduce nested modal exec;
-- compatibility AppData path remains `%APPDATA%\TelegramMultiChatExporter\`.
+- 输出 `root / Export Category / group / YYYY-MM-DD_HH-mm-ss.json`；同秒 `_2/_3/...`；
+- Export Category 是软件本地分类，不是 Telegram Chat Folder；删除分类不删除历史文件；
+- 每个 JSON 独立，不读/合并/覆盖历史导出；
+- GUI 消息导出 text/caption only；头像仅 UI cache；
+- Basic Group→Supergroup 只显示 current logical group；legacy peer 只作历史来源；
+- qasync 不重新引入 nested blocking modal；
+- AppData 兼容路径固定 `%APPDATA%\TelegramMultiChatExporter\`；
+- mark-read 默认 OFF；`JSON atomic success → checkpoint → optional read ack`。
+
+## Current-unread fixed semantics
+
+Issue #22 已修复。每个群在**该群真正开始执行导出时**单独冻结：
+
+```text
+lower = read_inbox_max_id_at_group_start
+upper = latest_message_id_at_group_start
+export only lower < id <= upper
+```
+
+- 不再使用 catalogue refresh 时的旧边界；
+- 多群 batch 每群轮到执行时分别刷新；
+- snapshot 后到达的消息不进入本次 run；
+- export 与 optional read-ack 使用同一个 frozen upper；
+- export failure 不 read-ack；read-ack failure 不删除成功 JSON；
+- migrated current-unread 只使用 current logical Supergroup，legacy Basic Group 不参与。
+
+Issue：<https://github.com/3ll3-3ll3/tg-exporter/issues/22>（closed completed）  
+ADR：`docs/decisions/007-current-unread-snapshot-at-export-start.md`
 
 # Completed
 
 ## Stable v0.1.x
 
-Windows GUI export, focused workspace, Telegram Folder filter, avatar lazy loading, local Export Categories, Basic Group→Supergroup catalogue/history handling, current-unread/since-last/Option-B ack, Windows system proxy, qasync fixes, tgctl status/chats/search/get/forward/send, JSON/error contract, dry-run/20-200 caps/ambiguity/FloodWait, v0.1.9 real Saved Messages send/forward E2E, v0.1.10 packaged UTF-8/exit-code hotfix.
+Windows GUI export、focused workspace、Telegram Folder filter、avatar lazy load、Export Categories、migration catalogue/history、current-unread/since-last/Option-B、Windows proxy、qasync fixes、tgctl status/chats/search/get/forward/send、JSON/error contract、dry-run/20-200 cap/ambiguity/FloodWait、v0.1.9 real Saved Messages send/forward E2E、v0.1.10 UTF-8/exit-code hotfix。
 
 ## v0.2 inherited by v0.3
 
-`codex/single-daemon-v0.2.0 @ 165b0a86c85049cb25ab51f601c210ef986556a2`: single daemon, Named Pipe IPC, GUI/tgctl clients, tray, lease/heartbeat, daemon-side export, coordinator, idle shutdown, write scheduling. It was not separately formally released; v0.3 inherits it.
+`codex/single-daemon-v0.2.0 @ 165b0a86c85049cb25ab51f601c210ef986556a2`：single daemon、Named Pipe IPC、GUI/tgctl clients、tray、lease/heartbeat、daemon-side export、coordinator、idle shutdown、write scheduling。未单独正式 Release；v0.3 继承。
 
-## v0.3 Candidate主体
+## v0.3 Candidate
 
-PR #20 implements:
+PR #20 已实现：
 
 ```text
 tgctl account get
@@ -130,153 +147,117 @@ tgctl topics list/history
 tgctl media download
 ```
 
-Reader has default page 100/max500, HMAC/query-bound cursors, Rich MessageInfoV3, current role snapshots, anonymous/send-as safety, current→legacy migration history, hostname domain filter, Forum, metadata-only media and explicit confirmed downloads.
+以及 bounded pagination、HMAC/query-bound cursor、Rich MessageInfoV3、current role snapshot、anonymous/send-as safety、current→legacy migration history、hostname domain filter、Forum、metadata-only media + confirmed bounded download。
 
-## Pre-E2E tail fixes already completed
+发布前还已修复：standalone+portable packaged `SESSION_BUSY=8` gate、cp1252/UTF-8 regression、migrated global search cursor、single-chat migrated cursor stale semantics、migration role/current entity、rich-get logical/source IDs、one-file+portable Candidate gate、main ancestry 整合，以及 Issue #22 per-group export-start unread snapshot。
 
-- standalone+portable packaged `SESSION_BUSY JSON/native exit=8` release gate restored;
-- release import gate includes daemon+reader+tgctl;
-- cp1252/UTF-8 source regression preserved;
-- migrated global search legacy cursor duplicate/gap bug fixed;
-- single-chat migrated cursor segment/stale semantics added;
-- migrated role snapshot uses current logical Supergroup;
-- legacy rich-get logical/source IDs aligned;
-- one-file+portable Candidate CI;
-- `main@v0.1.10` integrated into #20 ancestry and #20 retargeted to main;
-- no unresolved #20 review thread at audit time.
+# Frozen Human-E2E Candidate
 
-# Frozen Pre-KI-001 Candidate
+旧 `0ad4219... / run 33293667296 / artifact 9726786295` 仅作历史追溯，不再用于最终真人验收。
 
-Traceability only; do **not** treat this as final release candidate until Issue #22 is fixed:
+当前真人验收固定使用：
 
 ```text
-runtime: 0ad4219ef367d28326b5aca705fffe1d007db52b
-Windows run: 33293667296 = success
-pytest: 91 passed
-artifact: 9726786295
-https://github.com/3ll3-3ll3/tg-exporter/actions/runs/33293667296/artifacts/9726786295
+runtime head: 7e6f62d0c12eb9f88e53a15a5daaa271ba61e68c
+Windows run: 33296790070 = success
+pytest: 95 passed in 2.19s
+artifact id: 9727721868
+artifact name: TGExporter-v0.3.0-candidate-windows-x64
+artifact URL: https://github.com/3ll3-3ll3/tg-exporter/actions/runs/33296790070/artifacts/9727721868
 ```
 
 ```text
-one-file EXE  94f43dadc421e67de0a5f8cb7d1ff0b3f98bb85e46a46ca423c9d7d025fc55c6
-portable ZIP  6d0dad9514eab1ff1c4d80b35df704951fc7fe63ff23bea2536dcf01c19626bc
-tgctl.exe     aee8edbe9c7693b3fa299757bc386b285c42003e03d787718903b7223ae638a0
-outer artifact 37309a137577f8aa3de63bc5ff2a188147b1908be5d4e7a0e53df531358503f7
+TGExporter-v0.3.0-candidate-windows-x64.exe
+sha256 0afccfe03c005b78ad90aefd904f75fa53f536f22f7d90a90f00f1928fd403ae
+
+TGExporter-v0.3.0-candidate-windows-x64-portable.zip
+sha256 5fae791e3e8a87bafcfc4b17256349d1945787b163d4114a01bed05fadb9f7e8
+
+tgctl.exe
+sha256 01e566de4cc95fff273b68e4039b346843e2b3c54ee8f4afb74e9fe7a50189d5
+
+outer Actions artifact ZIP
+sha256 f68ea1d7b711f51c122a972008a32f1ffa06355ba1c85bdc9bd870e4fb67caca
 ```
 
-The later `7282326e...` branch tip was docs-only and also had green Windows run `33294055220`.
+Candidate gate 已通过 pytest、GUI+daemon+reader+CLI imports、one-file/portable builds、standalone/portable `SESSION_BUSY JSON/native exit 8`、全部 packaged smoke、SHA generation、artifact upload。
+
+其后的 docs-only commits 不替换上述 runtime binary。
 
 # In Progress
 
-Issue #22 / KI-001 is now the first task. After it is fixed and a new Candidate is frozen, perform the real-account E2E. Do not add unrelated features, merge #20, or release v0.3 meanwhile.
+**唯一当前产品任务：用户真人 Telegram 账号 E2E。**
 
-# Pending
+在 E2E 结论前：不继续堆新功能、不 merge PR #20、不创建 v0.3.0 Release。
 
-After #22 fix, human E2E covers:
+# Human E2E Pending
 
-- all dialog types + Telegram Folder;
-- real 500 history;
-- owner/admin and sender/current-role/domain filters;
-- anonymous/send-as identity safety;
-- multi-page history/search no overlap/gap;
-- since/until;
-- Saved Messages;
-- MESSAGE_NOT_FOUND / AMBIGUOUS_CHAT;
-- v0.3 GUI + tgctl coexist;
-- legacy direct lock → SESSION_BUSY + native exit 8;
-- GUI safe legacy-lock diagnostic;
-- log/stdout safety;
-- Forum if available;
-- metadata-only no files;
-- media plan no directory/files;
-- real media confirm only if user explicitly chooses.
+至少覆盖：
 
-Do not intentionally trigger FloodWait. Default v0.3 E2E does not need to repeat send/forward/mark-read.
+- all dialog types + Telegram Folder；
+- real 500 history；
+- owner/admin、sender/current-role/domain filters；
+- anonymous/send-as identity safety；
+- multi-page history/search no overlap/gap；
+- since/until；
+- Saved Messages；
+- MESSAGE_NOT_FOUND / AMBIGUOUS_CHAT；
+- v0.3 GUI + tgctl coexist；
+- legacy direct lock → SESSION_BUSY + native exit 8；
+- log/stdout safety；
+- Forum if available；
+- media metadata-only no files；
+- media plan no directory/files；
+- **current-unread real scenario**：每群执行开始时重新冻结，之后到达的消息留到下一次。
+
+Default E2E 不需要重复真实 send/forward。media confirm 或 Option-B read-ack 只在用户明确选择安全目标时测试。
 
 # Known Bugs
 
-## Issue #22 / KI-001 — Current-unread snapshot timing mismatch (OPEN)
+截至本快照，没有已知未修复的 automated-Candidate blocker。KI-001 / Issue #22 已关闭并有 regression。
 
-Full details: `docs/KNOWN_ISSUES.md`, ADR-007, <https://github.com/3ll3-3ll3/tg-exporter/issues/22>.
+历史回归知识：qasync nested modal task re-entry；packaged cp1252 Unicode error/exit1；migrated global-search legacy cursor repeat/gap；migrated rich-get ID mismatch。
 
-Accepted semantics: each group freezes `read_inbox_max_id/latest_message_id` **when that group's export begins**, then exports only `lower < id <= upper`; optional acknowledgement uses that exact upper bound after JSON+checkpoint.
+# Known Risks / Technical Debt
 
-Current runtime instead uses `GroupInfo` captured at catalogue load/refresh. `exporter.py` explicitly documents catalogue-refresh freezing; daemon `ExportCoordinator` passes the serialized plan without a per-group read-state refresh. This is a correctness mismatch and release blocker unless user changes the requirement.
+- CI/mock 不能替代真实账号 E2E；
+- `capture_current_unread_snapshot()` 当前通过 `iter_dialogs()` 精确查 current chat，correctness-first；大量 dialogs × 多群可能有额外延迟，只有真人 E2E 证明需要时才优化；
+- branch protection 不是 GitHub 强制；Agent 必须自觉 no-direct-main/no-force/no-release-overwrite；
+- Telegram 无法证明历史管理员任期、隐藏匿名身份或 deleted status，必须 unknown/unavailable 而不是猜；
+- v0.2 未单独 Release；v0.3 继承；
+- MCP 仍是 future direction only。
 
-Historical fixed regression knowledge: qasync nested modal task re-entry; packaged cp1252 Unicode error/exit1; migrated global-search legacy cursor repeat/gap; migrated rich-get ID mismatch.
+# Important Constraints / Production Safety
 
-# Known Risks
-
-- GitHub branch protection is absent; no-direct-main/no-force/release discipline is self-enforced;
-- v0.3 lacks systematic real-account E2E;
-- Telegram cannot prove historical admin tenure, hidden anonymous identity or deleted status; return unknown/unavailable rather than guess;
-- media download is a local-disk side effect;
-- legacy direct binaries can intentionally hit SessionLease compatibility boundary;
-- open historical Draft PR #17/#19 can confuse agents;
-- frozen pre-#22 hashes must be replaced after runtime fix.
-
-# Technical Debt
-
-- v0.2 implemented but not separately released; v0.3 inherits it;
-- detailed v0.3 design remains in PR #20 branch until merge;
-- historical monolithic DECISIONS now coexists with ADR index;
-- MCP remains future direction only;
-- runtime/docs/tests still need alignment to ADR-007 after #22.
-
-# Important Constraints
-
-Keep AppData path; do not delete historical JSON; do not copy/bypass Session lock; do not infer migration by name; do not infer anonymous identity from text; do not call unavailable messages deleted; reader never implicitly writes/marks read; Actions Artifact is not Production; AV/code-signing work is deprioritized.
-
-# Production Safety Boundaries
-
-No Secrets/Session contents in repo/log/CI; no AppData deletion/migration shortcut; no direct/force push main; no tag/Release overwrite/delete; real Telegram writes require explicit authorization; real media download requires explicit choice; no daemon TCP/HTTP/Web exposure; no real Telegram credentials in Actions.
-
-See `docs/SECURITY_MODEL.md` and `SECURITY.md`.
-
-# Recent Decisions
-
-ADR-001 single daemon; ADR-002 local authenticated Named Pipe; ADR-003 bounded safe cursors; ADR-004 explicit bounded writes/no automatic replay; ADR-005 migrated logical identity; ADR-006 human E2E release gate; ADR-007 per-group export-start unread snapshot.
+不要迁移/删除兼容 AppData；不要删历史 JSON；不要复制/绕过 SessionLease；不要按同名猜 migration；不要反推匿名身份；不要把 unavailable 说成 deleted；reader 不得隐式 write/read-ack；Actions Artifact 不是 Production Release；不得把真实 Telegram Secret 放 Actions；真实 Telegram write/media side effect 必须明确授权。
 
 # Next Steps
 
-1. Work on Issue #22 in PR #20 branch only;
-2. fetch safe current read/latest state immediately before each unread group's export;
-3. add regression for stale catalogue/new export-start snapshot, post-snapshot arrival exclusion, exact ack bound and per-group multi-batch snapshot;
-4. rerun full v0.3 Windows Candidate gate;
-5. freeze new runtime/artifact/hashes and update PR/HANDOFF;
-6. run real Telegram E2E;
-7. fix only actual E2E failures and revalidate affected paths;
-8. after all PASS, wait for explicit user `v0.3.0` release authorization;
-9. finalize release notes → merge/release → verify tag/target/assets/SHA256/workflow → update Production state.
+1. 用户下载 artifact `9727721868`；
+2. Windows + 真实 Telegram 账号 E2E；
+3. 如果发现问题，只修真实问题 + regression + 新 Candidate；
+4. E2E PASS 后收尾正式 v0.3 Release Notes；
+5. 用户明确授权“发布 v0.3.0”；
+6. merge PR #20 / formal Release workflow；
+7. 验证 tag、target、one-file、portable、tgctl、SHA、workflow；
+8. 更新 Production HANDOFF。
 
 # Recommended Next Task
 
-**Fix Issue #22 / KI-001. This is a correctness fix, not new scope.** Do it before asking the user to spend time on full v0.3 real-account E2E.
-
-# How To Resume
-
-1. Check main + Latest Release;
-2. check Issue #22;
-3. check PR #20 OPEN/DRAFT/base/head/CI;
-4. read `docs/KNOWN_ISSUES.md` + ADR-007;
-5. inspect PR #20 `exporter.py`, `read_state.py`, `export_coordinator.py`;
-6. read PR #20 daemon/reader designs and relevant ADRs;
-7. do not modify unrelated code;
-8. if a newer commit already fixed #22, verify regression/CI/new frozen artifact and update HANDOFF before E2E.
+**不要再写新功能。让用户开始测试 frozen Candidate `7e6f62d... / artifact 9727721868`。**
 
 # New Chat Resume Instructions
 
-Before editing code, a new GPT must read:
+新的 GPT 在修改代码前：
 
-1. `AGENTS.md`;
-2. `HANDOFF.md`;
-3. `README.md`;
-4. `docs/KNOWN_ISSUES.md`;
-5. `docs/ARCHITECTURE.md`;
-6. `docs/SECURITY_MODEL.md` + `SECURITY.md`;
-7. `docs/TESTING.md`, `docs/DEPLOYMENT.md`, `docs/RELEASE_PROCESS.md`;
-8. relevant `docs/decisions/` ADRs;
-9. Issue #22, PR #20, and historical PR #17/#19;
-10. main/dev branch commits, CI, Latest Release/Tags.
+1. 阅读 `AGENTS.md`；
+2. 阅读 `HANDOFF.md`；
+3. 阅读 `README.md`；
+4. 阅读 `docs/KNOWN_ISSUES.md`、`docs/ARCHITECTURE.md`、`docs/SECURITY_MODEL.md`、`SECURITY.md`；
+5. 阅读 `docs/TESTING.md`、`docs/DEPLOYMENT.md`、`docs/RELEASE_PROCESS.md`；
+6. 阅读相关 `docs/decisions/` ADR，特别 ADR-006/007；
+7. 查看 PR #20、PR #21、Issue #22；
+8. 核对 main、Latest Release、Candidate run/artifact；
+9. 在恢复确认前不要修改代码。
 
-Before changes, report to the user: current project state, current task, current known bug/risk, and recommended next action. If GitHub facts differ, GitHub wins; update HANDOFF first.
+恢复后先告诉用户：Production、Candidate、真人 E2E 状态、已知风险、推荐下一步。GitHub 当前事实若与本文件冲突，以 GitHub 为准并更新 HANDOFF。
