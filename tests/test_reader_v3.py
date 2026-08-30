@@ -13,6 +13,8 @@ from telegram_exporter.bridge_errors import INVALID_CURSOR, TelegramBridgeError
 from telegram_exporter.cursor_codec import CursorCodec
 from telegram_exporter.reader_service import PersonalAccountReader
 
+CHANNEL_ID = -(10**12 + 10)
+
 
 class User:
     def __init__(self, user_id: int, name: str, *, username: str | None = None, bot: bool = False, contact: bool = False):
@@ -56,12 +58,12 @@ class FakeClient:
         self.entities = {
             1: User(1, "Alice", username="alice", contact=True),
             2: User(2, "Helper", username="helperbot", bot=True),
-            -10010: Channel(10, "Svip", username="svip", megagroup=True),
+            CHANNEL_ID: Channel(10, "Svip", username="svip", megagroup=True),
         }
         self.dialogs = [
             FakeDialog(self.entities[1], "Alice", unread=2),
             FakeDialog(self.entities[2], "Helper", pinned=True),
-            FakeDialog(self.entities[-10010], "Svip", archived=True, message_id=20),
+            FakeDialog(self.entities[CHANNEL_ID], "Svip", archived=True, message_id=20),
         ]
         self.messages = []
 
@@ -90,6 +92,7 @@ class FakeClient:
         offset_id = int(kwargs.get("offset_id", 0) or 0)
         limit = int(kwargs.get("limit", 100))
         rows = [row for row in self.messages if not offset_id or row.id < offset_id]
+
         async def iterator():
             for row in rows[:limit]:
                 yield row
@@ -138,7 +141,25 @@ class MessageMediaDocument:
         self.spoiler = False
 
 
+def _fake_get_peer_id(value):
+    if isinstance(value, int):
+        return value
+    name = type(value).__name__
+    if name == "User":
+        return int(value.id)
+    if name == "Channel":
+        return -(10**12 + int(value.id))
+    if name == "Chat":
+        return -int(value.id)
+    raise TypeError(f"unsupported fake peer: {name}")
+
+
 def _reader() -> PersonalAccountReader:
+    # The production implementation receives real Telethon User/Chat/Channel
+    # objects. These small fakes intentionally patch only Telethon's marked-peer
+    # conversion so the tests preserve the real id contract without constructing
+    # huge TL objects.
+    reader_module.get_peer_id = _fake_get_peer_id
     service = SimpleNamespace(client=FakeClient())
     return PersonalAccountReader(service, cursor_codec=CursorCodec(b"x" * 32))
 
@@ -186,7 +207,7 @@ def test_rich_history_keeps_media_metadata_without_download(monkeypatch) -> None
     message = FakeMessage(9, "caption", sender, media=media, reply_to=SimpleNamespace(reply_to_msg_id=7, reply_to_top_id=None, forum_topic=False))
     message.file = SimpleNamespace(name="paper.pdf", mime_type="application/pdf", size=1234, width=None, height=None, duration=None)
     reader.client.messages = [message]
-    page = asyncio.run(reader.messages_history_page(-10010, limit=10))
+    page = asyncio.run(reader.messages_history_page(CHANNEL_ID, limit=10))
     assert page.count == 1
     row = page.items[0]
     assert row.text is None
