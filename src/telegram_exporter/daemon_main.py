@@ -7,7 +7,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from .daemon_server import DaemonServer
+from .daemon_server_v3 import DaemonServer
 from .daemon_tray import DaemonTray
 from .ipc_identity import load_or_create_identity
 from .ipc_transport import PipeServer
