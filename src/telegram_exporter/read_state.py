@@ -10,7 +10,7 @@ logger = logging.getLogger("telegram_exporter.read_state")
 
 
 async def mark_unread_snapshot_read(client: TelegramClient, group: GroupInfo) -> int | None:
-    """Mark the refreshed unread snapshot as read, never newer messages.
+    """Mark the frozen export-start unread snapshot as read, never newer messages.
 
     Telegram read state advances by message id. The acknowledgement therefore
     covers every incoming item up to the snapshot's latest message id, including

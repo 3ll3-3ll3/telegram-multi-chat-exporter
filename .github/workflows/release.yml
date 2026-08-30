@@ -29,10 +29,10 @@ jobs:
       - name: Test
         run: pytest -q
 
-      - name: GUI + CLI import check
+      - name: GUI + daemon + reader + CLI import check
         shell: pwsh
         run: |
-          python -c "from telegram_exporter.gui import MainWindow; from telegram_exporter.main import main; import telegram_exporter.tgctl; print('GUI + tgctl import OK')"
+          python -c "import telegram_exporter.daemon_gui; import telegram_exporter.daemon_main; import telegram_exporter.reader_service; import telegram_exporter.reader_search; import telegram_exporter.reader_topics; import telegram_exporter.reader_media; import telegram_exporter.tgctl; print('GUI + daemon + reader + tgctl import OK')"
 
       - name: Build one-file TGExporter EXE
         shell: pwsh

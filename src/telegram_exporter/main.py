@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from .focused_gui import MainWindow
+from .daemon_gui import MainWindow
 from .logging_setup import setup_logging
 
 APP_STYLE = """
@@ -89,13 +89,16 @@ async def _run_app(app: QApplication) -> int:
     try:
         await window.shutdown()
     except Exception:
-        # Closing the GUI should never surface a PyInstaller fatal-error dialog
-        # merely because best-effort Telegram cleanup failed during Qt teardown.
         logging.getLogger("telegram_exporter").exception("Application shutdown cleanup failed")
     return 0
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--tg-daemon-worker"]:
+        from .daemon_main import main as daemon_main
+
+        return daemon_main()
+
     logger = setup_logging()
     logger.info("Starting TG Exporter")
     try:

@@ -2,32 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-from pathlib import Path
 
 from PySide6.QtWidgets import QDialog, QInputDialog, QLineEdit, QMessageBox
 from qasync import asyncSlot
 
 from .diagnostics import friendly_error_message
-from .exporter import export_group
 from .gui import CredentialsDialog, MainWindow as BaseMainWindow
 from .logging_setup import log_file_path
-from .paths import credentials_path, session_files, session_path
 from .storage import write_json_atomic
-from .telegram_service import ApiCredentials, TelegramService
+from .paths import credentials_path
+from .telegram_proxy import DaemonTelegramProxy
+from .telegram_service import ApiCredentials
 
 logger = logging.getLogger("telegram_exporter.gui")
 
 
 class MainWindow(BaseMainWindow):
-    """qasync-safe GUI.
-
-    Qt's blocking ``exec()``/static convenience dialogs start a nested Qt event
-    loop.  That is unsafe while a qasync coroutine is already executing and
-    Telethon background tasks become ready.  This subclass keeps dialogs
-    non-blocking and awaits their ``finished`` signal on the existing asyncio
-    event loop instead.
-    """
+    """qasync-safe GUI using the single daemon as Telegram owner."""
 
     def __init__(self):
         super().__init__()
@@ -42,7 +33,7 @@ class MainWindow(BaseMainWindow):
                 future.set_result(result)
 
         dialog.finished.connect(on_finished)
-        dialog.open()  # returns immediately; no nested Qt event loop
+        dialog.open()
         try:
             return await future
         finally:
@@ -91,7 +82,6 @@ class MainWindow(BaseMainWindow):
         return clicked == QMessageBox.Yes
 
     def _show_message(self, icon: QMessageBox.Icon, title: str, text: str) -> None:
-        """Show a message box without blocking the qasync event loop."""
         box = QMessageBox(self)
         box.setIcon(icon)
         box.setWindowTitle(title)
@@ -111,7 +101,7 @@ class MainWindow(BaseMainWindow):
             self._show_message(QMessageBox.Warning, "配置无效", "API ID 和 API Hash 不能为空。")
             return False
         write_json_atomic(credentials_path(), {"api_id": creds.api_id, "api_hash": creds.api_hash})
-        logger.info("Telegram API credentials saved locally (api_id=%s; api_hash not logged)", creds.api_id)
+        logger.info("Telegram API credentials saved locally")
         return True
 
     async def _load_credentials_async(self) -> ApiCredentials | None:
@@ -123,6 +113,14 @@ class MainWindow(BaseMainWindow):
             return None
         return creds if self._save_credentials(creds) else None
 
+    async def _ensure_daemon_proxy(self) -> DaemonTelegramProxy:
+        service = self.service
+        if not isinstance(service, DaemonTelegramProxy):
+            service = DaemonTelegramProxy("gui")
+            self.service = service
+        await service.attach_gui()
+        return service
+
     @asyncSlot()
     async def edit_api_settings(self) -> None:
         if self._busy:
@@ -130,11 +128,16 @@ class MainWindow(BaseMainWindow):
         creds = await self._edit_credentials_dialog(self._saved_credentials())
         if creds is None or not self._save_credentials(creds):
             return
-        if self.service:
-            await self.service.close()
-            self.service = None
-        self._mark_disconnected(clear_groups=True)
-        self.status.setText("API 设置已保存。请点击『连接 Telegram』重新连接。")
+        self._set_busy(True, "正在把 API 配置同步到 Telegram 后台…")
+        try:
+            service = await self._ensure_daemon_proxy()
+            await service.configure_api(creds)
+            self._mark_disconnected(clear_groups=True)
+            self.status.setText("API 设置已保存。请点击『连接 Telegram』继续。")
+        except Exception as exc:
+            self._show_error(exc)
+        finally:
+            self._set_busy(False)
 
     @asyncSlot()
     async def reset_login(self) -> None:
@@ -149,19 +152,9 @@ class MainWindow(BaseMainWindow):
             return
         self._set_busy(True, "正在重置本地登录状态…")
         try:
-            if self.service:
-                await self.service.close()
-                self.service = None
-            removed = 0
-            for path in session_files():
-                try:
-                    if path.exists():
-                        path.unlink()
-                        removed += 1
-                except OSError as exc:
-                    logger.error("Failed to remove session file %s: %s", path.name, exc)
-                    raise
-            logger.info("Telegram local session reset; removed_files=%s", removed)
+            service = await self._ensure_daemon_proxy()
+            removed = await service.reset_session()
+            logger.info("Telegram local session reset by daemon; removed_files=%s", removed)
             self._mark_disconnected(clear_groups=True)
             self._show_message(
                 QMessageBox.Information,
@@ -174,7 +167,7 @@ class MainWindow(BaseMainWindow):
             self._set_busy(False)
 
     async def _first_login(self) -> bool:
-        assert self.service
+        assert isinstance(self.service, DaemonTelegramProxy)
         phone, ok = await self._prompt_text(
             "Telegram 登录",
             "手机号（含国家区号，例如 +86...）：",
@@ -194,8 +187,8 @@ class MainWindow(BaseMainWindow):
             logger.info("First login cancelled before code submission")
             return False
 
-        needs_password = not await self.service.sign_in_code(phone.strip(), code.strip())
-        if needs_password:
+        complete = await self.service.sign_in_code(phone.strip(), code.strip())
+        if not complete:
             password, ok = await self._prompt_text(
                 "两步验证",
                 "账号已启用两步验证，请输入 Telegram 2FA 密码：",
@@ -214,13 +207,15 @@ class MainWindow(BaseMainWindow):
         creds = await self._load_credentials_async()
         if not creds:
             return
-        self._set_busy(True, "正在连接 Telegram…")
-        logger.info("User started Telegram connection (api_id=%s)", creds.api_id)
+        self._set_busy(True, "正在连接 Telegram 后台…")
+        logger.info("User started Telegram daemon connection")
         try:
-            if self.service:
-                await self.service.close()
-            self.service = TelegramService(creds, session_path())
-            authorized = await self.service.connect()
+            service = await self._ensure_daemon_proxy()
+            auth = await service.auth_status()
+            if not auth.get("configured"):
+                authorized = await service.configure_api(creds)
+            else:
+                authorized = bool(auth.get("authorized"))
             if not authorized:
                 self.status.setText("网络已连接，账号尚未登录，准备发送验证码…")
                 authorized = await self._first_login()
@@ -231,89 +226,21 @@ class MainWindow(BaseMainWindow):
             self.export_btn.setEnabled(True)
             self.connect_btn.setText("Telegram 已连接")
             await self._refresh_groups_impl()
-            logger.info("Telegram connection and dialog loading succeeded")
+            logger.info("Telegram daemon connection and dialog loading succeeded")
         except Exception as exc:
             self._show_error(exc)
         finally:
             self._set_busy(False)
 
-    @asyncSlot()
-    async def start_export(self) -> None:
-        if self._busy or not self.service:
-            return
-        try:
-            plans = self._plans()
-        except ValueError as exc:
-            self._show_message(QMessageBox.Warning, "导出配置无效", str(exc))
-            return
-        if not plans:
-            self._show_message(QMessageBox.Information, "没有选择群组", "请至少选择一个群组。")
-            return
-
-        batch_name = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        batch_dir = Path(self.output_label.text()) / batch_name
-        self._set_busy(True, f"准备导出 {len(plans)} 个群组…")
-        self.progress.setRange(0, len(plans))
-        self.progress.setValue(0)
-        results = []
-        failures: list[tuple[str, str]] = []
-        logger.info("Starting export batch %s with %s groups", batch_name, len(plans))
-        try:
-            for done, (row, plan) in enumerate(plans, start=1):
-                status_item = self.table.item(row, 6)
-                if status_item:
-                    status_item.setText("导出中…")
-                try:
-                    logger.info("Exporting group '%s' mode=%s", plan.group.title, plan.mode.value)
-                    result = await export_group(self.service.client, plan, batch_dir)
-                    results.append(result)
-                    if result.latest_message_id:
-                        self.state.mark_success(
-                            result.chat_id,
-                            result.latest_message_id,
-                            datetime.now().astimezone().isoformat(timespec="seconds"),
-                        )
-                    if status_item:
-                        status_item.setText(f"完成：{result.message_count} 条")
-                    logger.info("Exported group '%s': %s messages", plan.group.title, result.message_count)
-                except Exception as exc:
-                    logger.error(
-                        "Export failed for group '%s'",
-                        plan.group.title,
-                        exc_info=(type(exc), exc, exc.__traceback__),
-                    )
-                    failures.append((plan.group.title, f"{type(exc).__name__}: {exc}"))
-                    if status_item:
-                        status_item.setText("失败")
-                self.progress.setValue(done)
-                self.status.setText(f"进度：{done}/{len(plans)} 个群组")
-        finally:
-            self._set_busy(False)
-
-        total = sum(r.message_count for r in results)
-        logger.info("Export batch completed: success=%s failed=%s messages=%s", len(results), len(failures), total)
-        if failures:
-            detail = "\n".join(f"• {name}: {err}" for name, err in failures[:8])
-            self._show_message(
-                QMessageBox.Warning,
-                "导出部分完成",
-                f"成功 {len(results)} 个群，共 {total} 条；失败 {len(failures)} 个。\n\n{detail}\n\n日志：{log_file_path()}",
-            )
-        else:
-            self._show_message(
-                QMessageBox.Information,
-                "导出完成",
-                f"成功导出 {len(results)} 个群组，共 {total} 条纯文本消息。\n\n输出目录：\n{batch_dir}",
-            )
-        self.status.setText(f"本批次完成：成功 {len(results)}，失败 {len(failures)}，共 {total} 条文本。")
-
     def _show_error(self, exc: Exception) -> None:
-        logger.error("GUI operation failed", exc_info=(type(exc), exc, exc.__traceback__))
+        # Do not log raw exception messages here: Telegram/auth exceptions may
+        # contain request-specific data. The safe type + friendly diagnostic is
+        # enough for ordinary logs/UI.
+        logger.error("GUI operation failed error_type=%s", type(exc).__name__)
         friendly = friendly_error_message(exc)
-        raw = f"{type(exc).__name__}: {exc}"
         self.status.setText("操作失败。可点击『打开日志目录』查看详细日志。")
         self._show_message(
             QMessageBox.Critical,
             "Telegram 操作失败",
-            f"{friendly}\n\n原始错误：{raw}\n\n日志文件：\n{log_file_path()}",
+            f"{friendly}\n\n错误类型：{type(exc).__name__}\n\n日志文件：\n{log_file_path()}",
         )

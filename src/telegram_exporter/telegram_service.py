@@ -114,9 +114,11 @@ class TelegramService:
         except Exception:
             self._session_lease.release()
             raise
+        # api_id/api_hash are credentials for this product's threat model and
+        # must not enter ordinary logs. A safe session basename and proxy label
+        # are enough for diagnostics.
         logger.info(
-            "Telegram client initialized (api_id=%s, session=%s, proxy=%s)",
-            credentials.api_id,
+            "Telegram client initialized (session=%s, proxy=%s)",
             session_file.name,
             self.proxy.safe_label if self.proxy else "direct",
         )

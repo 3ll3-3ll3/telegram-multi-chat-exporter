@@ -4,9 +4,13 @@ import sys
 
 
 def _smoke_test() -> int:
-    # Import the packaged GUI module without opening a window. GitHub Actions
-    # uses this to catch missing hidden imports / packaging regressions.
-    import telegram_exporter.gui  # noqa: F401
+    # Import the packaged production GUI + daemon stack without opening windows
+    # or touching a real Telegram Session. GitHub Actions uses this to catch
+    # hidden-import / PyInstaller regressions.
+    import telegram_exporter.daemon_gui  # noqa: F401
+    import telegram_exporter.daemon_main  # noqa: F401
+    import telegram_exporter.ipc_client  # noqa: F401
+    import telegram_exporter.ipc_transport  # noqa: F401
 
     return 0
 

@@ -14,7 +14,6 @@ from telegram_exporter.bridge_errors import (
     CHAT_NOT_FOUND,
     INVALID_ARGUMENT,
     MESSAGE_NOT_FOUND,
-    NOT_AUTHORIZED,
     TelegramBridgeError,
 )
 from telegram_exporter.models import GroupInfo
@@ -202,14 +201,6 @@ def test_forward_batch_limit_requires_explicit_override() -> None:
     tgctl.validate_forward_batch(list(range(200)), True)
     with pytest.raises(TelegramBridgeError):
         tgctl.validate_forward_batch(list(range(201)), True)
-
-
-def test_non_authorized_session_returns_stable_error(monkeypatch) -> None:
-    monkeypatch.setattr(tgctl, "load_saved_credentials", lambda: None)
-    with pytest.raises(TelegramBridgeError) as exc_info:
-        asyncio.run(tgctl._connect_existing_session())
-    assert exc_info.value.code == NOT_AUTHORIZED
-    assert "TG Exporter" in exc_info.value.message
 
 
 def test_flood_wait_maps_to_structured_error(monkeypatch, capsys) -> None:

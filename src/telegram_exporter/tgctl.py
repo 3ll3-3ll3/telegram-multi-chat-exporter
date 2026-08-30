@@ -12,26 +12,35 @@ from typing import Any
 from telethon.errors import FloodWaitError
 
 from .bridge_errors import (
+    ACCESS_DENIED,
     AMBIGUOUS_CHAT,
+    AUTH_GUI_ONLY,
     CHAT_NOT_FOUND,
+    CURSOR_STALE,
+    DAEMON_UNAVAILABLE,
+    DOWNLOAD_CONFIRMATION_REQUIRED,
+    DOWNLOAD_LIMIT_EXCEEDED,
+    EXPORT_IN_PROGRESS,
     FLOOD_WAIT,
     INVALID_ARGUMENT,
+    INVALID_CURSOR,
+    MEMBERS_UNAVAILABLE,
     MESSAGE_NOT_FOUND,
+    NOT_A_FORUM,
     NOT_AUTHORIZED,
     SESSION_BUSY,
     WRITE_FAILED,
+    WRITE_OUTCOME_UNKNOWN,
     TelegramBridgeError,
 )
-from .credentials_store import load_saved_credentials
 from .logging_setup import setup_logging
-from .paths import session_path
-from .proxy import detect_windows_system_proxy
 from .session_lock import SessionBusyError
-from .telegram_service import TelegramService
+from .telegram_proxy import DaemonTelegramProxy
 
 DEFAULT_FORWARD_LIMIT = 20
 LARGE_FORWARD_LIMIT = 200
 SAFE_SESSION_LABEL = r"%APPDATA%\TelegramMultiChatExporter\telegram.session"
+READER_SCHEMA = "tgctl.reader.v1"
 
 
 class TgctlArgumentParser(argparse.ArgumentParser):
@@ -40,33 +49,23 @@ class TgctlArgumentParser(argparse.ArgumentParser):
 
 
 def _configure_console_streams() -> None:
-    """Make the CLI contract UTF-8 even on legacy Windows code pages.
-
-    PyInstaller console builds inherit the process' stdout/stderr text encoding.
-    On machines/runners using a legacy code page (for example cp1252), emitting
-    Chinese JSON error messages can otherwise raise UnicodeEncodeError *while
-    handling the original error*. That secondary failure changes the native
-    process exit code to 1 and breaks the documented JSON/exit-code contract.
-
-    ``reconfigure`` is available on normal Python/PyInstaller TextIOWrapper
-    streams. Test harnesses and embedded callers may replace streams with
-    objects that do not provide it, so those are intentionally left untouched.
-    """
-
+    """Keep packaged CLI JSON UTF-8 on legacy Windows console code pages."""
     stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(stdout_reconfigure):
         stdout_reconfigure(encoding="utf-8", errors="strict")
-
     stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
     if callable(stderr_reconfigure):
-        # Human diagnostics should never crash error handling merely because a
-        # terminal cannot represent a character. UTF-8 handles normal Windows
-        # terminals/pipes; backslashreplace is a final defensive fallback.
         stderr_reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="stdout 仅输出机器可读 JSON")
+
+
+def _add_page_output_flags(parser: argparse.ArgumentParser) -> None:
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="stdout 输出单个 JSON page envelope")
+    output.add_argument("--jsonl", action="store_true", help="stdout 按 meta/item/end JSONL 输出当前有限页")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,6 +75,24 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     _add_json_flag(status)
 
+    account = sub.add_parser("account")
+    account_sub = account.add_subparsers(dest="account_command", required=True)
+    account_get = account_sub.add_parser("get")
+    _add_json_flag(account_get)
+
+    dialogs = sub.add_parser("dialogs")
+    dialogs_sub = dialogs.add_subparsers(dest="dialogs_command", required=True)
+    dialogs_list = dialogs_sub.add_parser("list")
+    dialogs_list.add_argument("--type", dest="dialog_type", choices=["group", "supergroup", "channel", "private", "bot", "saved"])
+    dialogs_list.add_argument("--folder")
+    dialogs_list.add_argument("--archived", choices=["yes", "no", "all"], default="all")
+    dialogs_list.add_argument("--search")
+    dialogs_list.add_argument("--unread", choices=["yes", "no", "all"], default="all")
+    dialogs_list.add_argument("--pinned", choices=["yes", "no", "all"], default="all")
+    dialogs_list.add_argument("--cursor")
+    dialogs_list.add_argument("--limit", type=int, default=100)
+    _add_page_output_flags(dialogs_list)
+
     chats = sub.add_parser("chats")
     chats_sub = chats.add_subparsers(dest="chats_command", required=True)
     chats_list = chats_sub.add_parser("list")
@@ -84,21 +101,77 @@ def build_parser() -> argparse.ArgumentParser:
     chats_list.add_argument("--limit", type=int, default=100)
     _add_json_flag(chats_list)
 
+    chats_get = chats_sub.add_parser("get")
+    chats_get.add_argument("--chat", required=True)
+    _add_json_flag(chats_get)
+
+    chats_members = chats_sub.add_parser("members")
+    chats_members.add_argument("--chat", required=True)
+    chats_members.add_argument("--role", choices=["owner", "admin", "member"])
+    chats_members.add_argument("--cursor")
+    chats_members.add_argument("--limit", type=int, default=100)
+    _add_page_output_flags(chats_members)
+
     messages = sub.add_parser("messages")
     messages_sub = messages.add_subparsers(dest="messages_command", required=True)
+
     search = messages_sub.add_parser("search")
-    search.add_argument("--chat", required=True)
+    search.add_argument("--chat")
     search.add_argument("--contains")
+    search.add_argument("--sender-id", type=int)
+    search.add_argument("--sender-role", choices=["owner", "admin", "member"])
     search.add_argument("--since")
     search.add_argument("--until")
+    search.add_argument("--message-type")
+    search.add_argument("--topic", dest="topic_id", type=int)
+    search.add_argument("--has-link", choices=["yes", "no", "all"], default="all")
+    search.add_argument("--url-domain")
+    search.add_argument("--cursor")
     search.add_argument("--limit", type=int, default=100)
     search.add_argument("--case-sensitive", action="store_true")
-    _add_json_flag(search)
+    search.add_argument("--legacy-schema", action="store_true", help="使用 v0.1.x 单会话简化搜索结果")
+    _add_page_output_flags(search)
+
+    history = messages_sub.add_parser("history")
+    history.add_argument("--chat", required=True)
+    history.add_argument("--cursor")
+    history.add_argument("--limit", type=int, default=100)
+    history.add_argument("--since")
+    history.add_argument("--until")
+    _add_page_output_flags(history)
 
     get = messages_sub.add_parser("get")
     get.add_argument("--chat", required=True)
     get.add_argument("--ids", nargs="+", type=int, required=True)
+    get.add_argument("--legacy-schema", action="store_true", help="临时保留 v0.1.x 简化消息 schema")
     _add_json_flag(get)
+
+    topics = sub.add_parser("topics")
+    topics_sub = topics.add_subparsers(dest="topics_command", required=True)
+    topics_list = topics_sub.add_parser("list")
+    topics_list.add_argument("--chat", required=True)
+    topics_list.add_argument("--cursor")
+    topics_list.add_argument("--limit", type=int, default=100)
+    _add_page_output_flags(topics_list)
+
+    topics_history = topics_sub.add_parser("history")
+    topics_history.add_argument("--chat", required=True)
+    topics_history.add_argument("--topic", dest="topic_id", required=True, type=int)
+    topics_history.add_argument("--cursor")
+    topics_history.add_argument("--limit", type=int, default=100)
+    topics_history.add_argument("--since")
+    topics_history.add_argument("--until")
+    _add_page_output_flags(topics_history)
+
+    media = sub.add_parser("media")
+    media_sub = media.add_subparsers(dest="media_command", required=True)
+    media_download = media_sub.add_parser("download")
+    media_download.add_argument("--chat", required=True)
+    media_download.add_argument("--ids", nargs="+", type=int, required=True)
+    media_download.add_argument("--output", required=True)
+    media_download.add_argument("--confirm")
+    media_download.add_argument("--allow-large-download", action="store_true")
+    _add_json_flag(media_download)
 
     forward = sub.add_parser("forward")
     forward.add_argument("--from", dest="source_chat", required=True)
@@ -167,22 +240,24 @@ def _exit_code(code: str) -> int:
     return {
         INVALID_ARGUMENT: 2,
         NOT_AUTHORIZED: 3,
+        AUTH_GUI_ONLY: 3,
         CHAT_NOT_FOUND: 4,
         MESSAGE_NOT_FOUND: 4,
         AMBIGUOUS_CHAT: 5,
         FLOOD_WAIT: 6,
         WRITE_FAILED: 7,
         SESSION_BUSY: 8,
+        EXPORT_IN_PROGRESS: 9,
+        WRITE_OUTCOME_UNKNOWN: 10,
+        DAEMON_UNAVAILABLE: 11,
+        INVALID_CURSOR: 12,
+        CURSOR_STALE: 12,
+        ACCESS_DENIED: 13,
+        MEMBERS_UNAVAILABLE: 13,
+        NOT_A_FORUM: 14,
+        DOWNLOAD_CONFIRMATION_REQUIRED: 15,
+        DOWNLOAD_LIMIT_EXCEEDED: 16,
     }.get(code, 1)
-
-
-def _chat_dict(group) -> dict[str, Any]:
-    return {
-        "chat_id": group.chat_id,
-        "title": group.title,
-        "username": group.username,
-        "type": group.chat_type,
-    }
 
 
 def _human_print(payload: dict[str, Any]) -> None:
@@ -200,156 +275,270 @@ def _human_print(payload: dict[str, Any]) -> None:
             else:
                 print(item)
     elif isinstance(data, dict):
-        for key, value in data.items():
-            print(f"{key}: {value}")
+        if isinstance(data.get("items"), list):
+            for item in data["items"]:
+                print(json.dumps(item, ensure_ascii=False))
+            if data.get("has_more"):
+                print(f"next_cursor: {data.get('next_cursor')}")
+        else:
+            for key, value in data.items():
+                print(f"{key}: {value}")
     else:
         print(data)
 
 
-def emit(payload: dict[str, Any], json_mode: bool) -> None:
-    if json_mode:
+def emit(payload: dict[str, Any], json_mode: bool, jsonl_mode: bool = False) -> None:
+    if jsonl_mode:
+        if not payload.get("ok"):
+            print(json.dumps({"type": "error", **payload}, ensure_ascii=False, separators=(",", ":")))
+            return
+        data = payload.get("data") or {}
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            print(
+                json.dumps(
+                    {"type": "error", "ok": False, "error": {"code": INVALID_ARGUMENT, "message": "该命令不支持 JSONL page 输出。"}},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            return
+        print(json.dumps({"type": "meta", "ok": True, "data": {"schema": READER_SCHEMA}}, ensure_ascii=False, separators=(",", ":")))
+        for item in data["items"]:
+            print(json.dumps({"type": "item", "data": item}, ensure_ascii=False, separators=(",", ":")))
+        end = {
+            key: data.get(key)
+            for key in ("count", "next_cursor", "has_more", "timing", "scanned_count", "matched_count")
+            if key in data
+        }
+        print(json.dumps({"type": "end", "data": end}, ensure_ascii=False, separators=(",", ":")))
+    elif json_mode:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
         _human_print(payload)
 
 
-async def _connect_existing_session(*, allow_unauthorized: bool = False) -> tuple[TelegramService | None, bool]:
-    creds = load_saved_credentials()
-    if creds is None:
-        if allow_unauthorized:
-            return None, False
-        raise TelegramBridgeError(
-            NOT_AUTHORIZED,
-            "未找到已保存的 Telegram 登录配置。请先打开 TG Exporter 完成 Telegram 登录。",
+def _advanced_search_requested(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.sender_id is not None,
+            args.sender_role is not None,
+            args.message_type is not None,
+            args.topic_id is not None,
+            args.has_link != "all",
+            args.url_domain is not None,
+            args.cursor is not None,
+            args.jsonl,
+            args.chat is None,
         )
-    service = TelegramService(creds, session_path())
-    try:
-        authorized = await service.connect()
-    except Exception:
-        await service.close()
-        raise
-    if not authorized and not allow_unauthorized:
-        await service.close()
-        raise TelegramBridgeError(
-            NOT_AUTHORIZED,
-            "当前 Telegram Session 尚未登录。请先打开 TG Exporter 完成 Telegram 登录。",
-        )
-    return service, authorized
+    )
 
 
 async def run_command(args: argparse.Namespace) -> dict[str, Any]:
+    proxy = DaemonTelegramProxy("tgctl")
+
     if args.command == "status":
-        proxy = detect_windows_system_proxy()
-        service, authorized = await _connect_existing_session(allow_unauthorized=True)
-        try:
-            account = await service.account_info() if service and authorized else None
-            return success(
+        return success(await proxy.status())
+
+    if args.command == "account" and args.account_command == "get":
+        return success(await proxy.ipc.request("account.get"))
+
+    if args.command == "dialogs" and args.dialogs_command == "list":
+        return success(
+            await proxy.ipc.request(
+                "dialogs.list",
                 {
-                    "authorized": authorized,
-                    "account": account,
-                    "session": SAFE_SESSION_LABEL,
-                    "proxy": proxy.safe_label if proxy else "direct",
-                    "hint": None if authorized else "请先打开 TG Exporter 完成 Telegram 登录",
-                }
+                    "dialog_type": args.dialog_type,
+                    "folder": args.folder,
+                    "archived": args.archived,
+                    "search": args.search,
+                    "unread": args.unread,
+                    "pinned": args.pinned,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                },
             )
-        finally:
-            if service:
-                await service.close()
+        )
 
     if args.command == "forward":
         validate_forward_batch(args.ids, args.allow_large_batch)
 
-    service, _ = await _connect_existing_session()
-    assert service is not None
-    try:
-        if args.command == "chats" and args.chats_command == "list":
-            if args.limit <= 0:
-                raise TelegramBridgeError(INVALID_ARGUMENT, "limit 必须大于 0。")
-            groups = await service.list_groups()
-            if args.folder:
-                folder_key = args.folder.casefold()
-                known_folders = {folder.title.casefold() for group in groups for folder in group.folders}
-                if folder_key not in known_folders:
-                    raise TelegramBridgeError(CHAT_NOT_FOUND, f"找不到 Telegram 分组「{args.folder}」。")
-                groups = [g for g in groups if any(f.title.casefold() == folder_key for f in g.folders)]
-            if args.search:
-                needle = args.search.casefold()
-                groups = [
-                    g
-                    for g in groups
-                    if needle in g.title.casefold() or (g.username and needle in g.username.casefold())
-                ]
-            return success([_chat_dict(group) for group in groups[: args.limit]])
+    if args.command == "chats" and args.chats_command == "list":
+        if args.limit <= 0:
+            raise TelegramBridgeError(INVALID_ARGUMENT, "limit 必须大于 0。")
+        data = await proxy.ipc.request(
+            "chats.list",
+            {"folder": args.folder, "search": args.search, "limit": args.limit},
+        )
+        return success(data)
 
-        if args.command == "messages" and args.messages_command == "search":
-            rows = await service.search_messages(
+    if args.command == "chats" and args.chats_command == "get":
+        return success(await proxy.ipc.request("chats.get", {"chat": args.chat}))
+
+    if args.command == "chats" and args.chats_command == "members":
+        return success(
+            await proxy.ipc.request(
+                "chats.members",
+                {"chat": args.chat, "role": args.role, "cursor": args.cursor, "limit": args.limit},
+            )
+        )
+
+    if args.command == "messages" and args.messages_command == "search":
+        since = _parse_iso(args.since)
+        until = _parse_iso(args.until)
+        if args.legacy_schema:
+            if args.chat is None:
+                raise TelegramBridgeError(INVALID_ARGUMENT, "legacy search 必须指定 --chat。")
+            if _advanced_search_requested(args):
+                raise TelegramBridgeError(INVALID_ARGUMENT, "--legacy-schema 不支持第三代高级搜索参数。")
+            rows = await proxy.search_messages(
                 args.chat,
                 contains=args.contains,
-                since=_parse_iso(args.since),
-                until=_parse_iso(args.until),
+                since=since,
+                until=until,
                 limit=args.limit,
                 case_sensitive=args.case_sensitive,
             )
             return success(rows)
+        return success(
+            await proxy.ipc.request(
+                "messages.search",
+                {
+                    "schema": "v3",
+                    "chat": args.chat,
+                    "contains": args.contains,
+                    "sender_id": args.sender_id,
+                    "sender_role": args.sender_role,
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                    "message_type": args.message_type,
+                    "topic_id": args.topic_id,
+                    "has_link": args.has_link,
+                    "url_domain": args.url_domain,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                    "case_sensitive": args.case_sensitive,
+                },
+            )
+        )
 
-        if args.command == "messages" and args.messages_command == "get":
-            rows = await service.get_messages(args.chat, args.ids)
-            return success(rows)
+    if args.command == "messages" and args.messages_command == "history":
+        since = _parse_iso(args.since)
+        until = _parse_iso(args.until)
+        return success(
+            await proxy.ipc.request(
+                "messages.history",
+                {
+                    "chat": args.chat,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
+        )
 
-        if args.command == "forward":
-            try:
-                result = await service.forward_messages(
-                    args.source_chat,
-                    args.destination_chat,
-                    args.ids,
-                    dry_run=args.dry_run,
-                )
-            except (TelegramBridgeError, FloodWaitError):
-                raise
-            except Exception as exc:
-                raise TelegramBridgeError(WRITE_FAILED, f"Telegram 转发失败：{type(exc).__name__}") from exc
-            return success(result)
+    if args.command == "messages" and args.messages_command == "get":
+        if args.legacy_schema:
+            return success(await proxy.get_messages(args.chat, args.ids))
+        return success(
+            await proxy.ipc.request(
+                "messages.get",
+                {"chat": args.chat, "ids": args.ids, "schema": "v3"},
+            )
+        )
 
-        if args.command == "send":
-            try:
-                result = await service.send_text_message(
-                    args.destination_chat,
-                    args.text,
-                    dry_run=args.dry_run,
-                )
-            except (TelegramBridgeError, FloodWaitError):
-                raise
-            except Exception as exc:
-                raise TelegramBridgeError(WRITE_FAILED, f"Telegram 发送失败：{type(exc).__name__}") from exc
-            data = _jsonable(result)
-            if args.dry_run:
-                data["text"] = args.text
-            return success(data)
+    if args.command == "topics" and args.topics_command == "list":
+        return success(
+            await proxy.ipc.request(
+                "topics.list",
+                {"chat": args.chat, "cursor": args.cursor, "limit": args.limit},
+            )
+        )
 
-        raise TelegramBridgeError(INVALID_ARGUMENT, "未知命令。")
-    finally:
-        await service.close()
+    if args.command == "topics" and args.topics_command == "history":
+        since = _parse_iso(args.since)
+        until = _parse_iso(args.until)
+        return success(
+            await proxy.ipc.request(
+                "topics.history",
+                {
+                    "chat": args.chat,
+                    "topic_id": args.topic_id,
+                    "cursor": args.cursor,
+                    "limit": args.limit,
+                    "since": since.isoformat() if since else None,
+                    "until": until.isoformat() if until else None,
+                },
+            )
+        )
+
+    if args.command == "media" and args.media_command == "download":
+        confirmed = bool(args.confirm)
+        return success(
+            await proxy.ipc.request(
+                "media.download",
+                {
+                    "chat": args.chat,
+                    "ids": args.ids,
+                    "output": args.output,
+                    "confirm": args.confirm,
+                    "allow_large_download": args.allow_large_download,
+                },
+                side_effect_after_send=confirmed,
+                retry_read_once=not confirmed,
+            )
+        )
+
+    if args.command == "forward":
+        result = await proxy.forward_messages(
+            args.source_chat,
+            args.destination_chat,
+            args.ids,
+            dry_run=args.dry_run,
+            allow_large_batch=args.allow_large_batch,
+        )
+        return success(result)
+
+    if args.command == "send":
+        result = await proxy.send_text_message(
+            args.destination_chat,
+            args.text,
+            dry_run=args.dry_run,
+        )
+        data = _jsonable(result)
+        if args.dry_run:
+            data["text"] = args.text
+        return success(data)
+
+    raise TelegramBridgeError(INVALID_ARGUMENT, "未知命令。")
 
 
 def main(argv: list[str] | None = None) -> int:
     _configure_console_streams()
-    setup_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--tg-daemon-worker"]:
+        from .daemon_main import main as daemon_main
+
+        return daemon_main()
+
+    setup_logging()
     json_mode = "--json" in argv
+    jsonl_mode = "--jsonl" in argv
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
         json_mode = bool(getattr(args, "json", json_mode))
+        jsonl_mode = bool(getattr(args, "jsonl", jsonl_mode))
         payload = asyncio.run(run_command(args))
-        emit(payload, json_mode)
+        emit(payload, json_mode, jsonl_mode)
         return 0
     except TelegramBridgeError as exc:
         payload = failure(exc.code, exc.message, exc.details)
-        emit(payload, json_mode)
+        emit(payload, json_mode, jsonl_mode)
         return _exit_code(exc.code)
     except SessionBusyError as exc:
         payload = failure(SESSION_BUSY, str(exc))
-        emit(payload, json_mode)
+        emit(payload, json_mode, jsonl_mode)
         return _exit_code(SESSION_BUSY)
     except FloodWaitError as exc:
         seconds = int(getattr(exc, "seconds", 0) or 0)
@@ -358,12 +547,14 @@ def main(argv: list[str] | None = None) -> int:
             f"Telegram 要求等待 {seconds} 秒后再试。" if seconds else "Telegram 触发 Flood Wait。",
             {"retry_after_seconds": seconds},
         )
-        emit(payload, json_mode)
+        emit(payload, json_mode, jsonl_mode)
         return _exit_code(FLOOD_WAIT)
+    except KeyboardInterrupt:
+        return 130
     except Exception as exc:
         logging.getLogger("telegram_exporter.tgctl").exception("tgctl command failed")
         payload = failure("TELEGRAM_ERROR", f"Telegram 操作失败：{type(exc).__name__}")
-        emit(payload, json_mode)
+        emit(payload, json_mode, jsonl_mode)
         return 1
 
 
