@@ -67,8 +67,9 @@ TG daemon（唯一 Telegram Session / Telethon owner）
 - 每群独立 date range / current unread / since last successful export。
 - 默认聊天导出只保留文字/caption，不下载聊天媒体；群头像仅 UI cache 例外。
 - Basic Group→Supergroup 只显示当前逻辑群；date-range/history 可按 Telegram 显式 migration 关系读取 legacy + current。
-- current unread 使用冻结边界。
-- GUI Option B “导出后标已读”默认 OFF；严格 `JSON atomic success → checkpoint → optional read ack`。
+- **current unread 必须在每个群真正开始执行导出时单独冻结边界**：`read_inbox_max_id_at_group_start < id <= latest_message_id_at_group_start`。不得继续使用 catalogue refresh 时的旧 snapshot，也不得移除 upper bound；snapshot 之后新到消息不属于本次导出，也不得被本次 optional read-ack 标已读。
+- migrated 群的 current unread 只对当前 logical Supergroup 抓 snapshot；legacy Basic Group 只用于历史兼容，不参与 current unread。
+- GUI Option B “导出后标已读”默认 OFF；严格 `JSON atomic success → checkpoint → optional read ack`，且 read-ack 必须使用与本次导出完全相同的 frozen snapshot upper bound。
 - qasync async flow 不重新引入 `QDialog.exec()` 或其它 nested blocking modal。
 
 ## 6. v0.3 Reader 安全边界
@@ -174,15 +175,17 @@ v0.3 candidate 至少要求：
 
 ```text
 pytest -q
-GUI + reader import check
+GUI + daemon + reader + CLI import check
 TGExporter PyInstaller one-file build
+TGExporter PyInstaller portable onedir build
 tgctl PyInstaller one-file build
-packaged SESSION_BUSY + native exit 8 regression
-packaged smoke tests
-Actions candidate artifact
+standalone + portable packaged SESSION_BUSY JSON/native exit 8 regression
+one-file + portable GUI smoke
+standalone + portable tgctl smoke
+candidate SHA-256 + Actions artifact
 ```
 
-还必须覆盖 cursor、dialogs types、owner/admin/anonymous sender、rich message、Forum、URL domain、Saved Messages、JSONL、media confirmation/limits、敏感信息泄漏。
+还必须覆盖 unread export-start snapshot、cursor、dialogs types、owner/admin/anonymous sender、rich message、Forum、URL domain、Saved Messages、JSONL、media confirmation/limits、敏感信息泄漏。
 
 Mock/CI 不能代替真实账号只读 E2E。完成 candidate 后停止，不发布 Release，等待用户验收。
 
