@@ -1,293 +1,231 @@
-# Testing Guide
+# Testing Guide — v0.3 Candidate
 
-本项目测试分三层：
+本项目测试分四层：
 
-1. CI/unit/mock：模型、GUI 导出、tgctl parser/protocol/safety、PyInstaller。
-2. packaged smoke-test：TGExporter.exe / tgctl.exe 能启动 smoke path。
-3. 真实 Telegram E2E：登录、folders、read marker、migration、真实 search/forward/send。
+1. unit/mock：模型、cursor、reader/filter、daemon scheduling、GUI legacy 行为、安全边界；
+2. Windows package CI：TGExporter/tgctl PyInstaller、真实 OS Session lock、native exit code；
+3. candidate artifact：可下载 EXE + SHA-256；
+4. 用户真实 Telegram 只读 E2E。
 
-CI green 不等于真实账号 E2E。
+**CI green 不等于真实账号 E2E。**
 
-## 1. 本地/CI 基线
+## 1. CI 基线
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
 pip install -e ".[dev]"
 pytest -q
 ```
 
-v0.1.9+ 最低 PR 门槛：
+v0.3 最新 head 必须继续通过：
 
 ```text
 pytest -q
-GUI + tgctl import check
-TGExporter one-file build
-TGExporter packaged --smoke-test
-tgctl one-file build
-tgctl packaged --smoke-test
+GUI + reader/tgctl import
+TGExporter one-file PyInstaller
+tgctl one-file PyInstaller
+legacy OS Session lock -> packaged SESSION_BUSY JSON + native exit 8
+TGExporter packaged smoke
+tgctl packaged smoke
+artifact upload
 ```
 
-正式 Release 还必须验证 GUI portable，并确认 portable 内 `tgctl.exe` 也能 smoke-test。
+## 2. GUI/v0.2 regression
 
-## 2. GUI 回归矩阵
+不得因 Reader 破坏：focused workspace、Telegram Chat Folder、avatar lazy load、Export Category、category/group/timestamp JSON、same-second no overwrite、migration collapse/date-range history、frozen current unread、Option B 顺序、since-last checkpoint、qasync shutdown。
 
-至少保持：
+v0.3 GUI 与 v0.3 tgctl 都经 daemon，正常同时存在不应 `SESSION_BUSY`。export 活跃时 reader 等待；真实 send/forward 立即 `EXPORT_IN_PROGRESS`。
 
-- 首次 GUI 登录与 Session 复用；
-- Windows system proxy / Clash；
-- qasync non-blocking login/dialog；
-- focused workspace；
-- Telegram Chat Folder；
-- avatar lazy load；
-- Export Category create/persist/delete-without-disk-delete；
-- `category/group/timestamp.json`；
-- same-second no overwrite；
-- Basic Group → Supergroup catalogue collapse；
-- migrated date-range legacy + current history；
-- frozen current unread；
-- Option B read ack order；
-- since-last monotonic checkpoint；
-- shutdown no `await None` fatal dialog。
+## 3. Cursor / page
 
-用户已在 v0.1.8 对分类目录、migration collapse/history 与旧 Session/settings 兼容完成真人验证。
+必须覆盖：
 
-## 3. tgctl unit tests
+- default 100 / max 500；
+- cursor HMAC sign/verify；
+- method/query mismatch；
+- tamper；
+- cursor 不含 access_hash/file_reference/credential；
+- dialogs canonical pagination 不重复；
+- history 2+ pages no overlap/gap；
+- migration current→legacy segment transition；
+- search continuation；
+- invalid → `INVALID_CURSOR`；stale entity → `CURSOR_STALE`。
 
-`tests/test_tgctl.py` 至少覆盖：
+## 4. Dialogs/account
+
+Mock/API contract 覆盖：group/supergroup/channel/private/bot/Saved Messages/archive/forum/unread/pinned/muted/folder/migration。Saved Messages 只能出现一个 `reference=me` row。
+
+`account get` 只允许 safe account fields，不允许 phone/credentials。
+
+## 5. Chat details / participant roles
+
+测试：owner/admin/member mapping、admin title、bot/deleted account、权限不可枚举、current role semantics、unknown role 不强制 member、Basic Group 与 Channel/Supergroup API 路径。
+
+禁止显示名推断 owner/admin。
+
+## 6. Structured sender / rich messages
+
+至少测试：
 
 ```text
-CLI 参数解析
---json success envelope
-structured failure/error code
-chat not found
-ambiguous title -> candidates
-search contains/since/until/limit
-messages get missing ids
-forward dry-run no write
-send dry-run no write
-write logs do not contain message body
-20 default forward limit
-200 allow-large hard cap
-NOT_AUTHORIZED
-FloodWait -> retry_after_seconds
-safe status/output excludes credential fields
+user sender
+channel/chat send-as
+anonymous admin
+reply / reply_top
+forum_topic_id
+forward origin
+entities
+views / forwards
+reactions
+poll
+service action
+media metadata
+caption vs text
+MESSAGE_NOT_FOUND
 ```
 
-`tests/test_session_lock.py` 覆盖 SessionLease 基本生命周期。
+匿名管理员不得错误绑定具体 user。`availability` 不得伪造 deleted=true。
 
-所有 Telegram API 实际 write unit tests 使用 Fake/Mock client；CI 不连接用户账号。
+## 7. History
 
-## 4. JSON stdout test
+`messages history`：newest→older、since inclusive、until exclusive、bounded memory、max 500、不推进 read marker、不下载媒体。
 
-`--json` 模式必须：
+Migration history 唯一键 `(source_chat_id,message_id)`，不能只用 message id 去重。
 
-- stdout 只有一份 JSON；
-- 不含 logging 前缀；
-- success 为 `{"ok":true,"data":...}`；
-- failure 为 `{"ok":false,"error":...}`；
-- exit code 0/非0 与结果匹配。
+## 8. Advanced search
 
-stderr 可以用于人类模式错误，但 JSON 模式不得要求 Codex 解析日志判断成功失败。
+测试：single/global、contains、sender-id、current sender-role、since/until、message type、topic、has-link、url-domain、cursor。
 
-## 5. Chat resolution tests
-
-允许：marked chat_id、精确 @username、精确 title。
-
-必须测：
-
-- 单一精确 title 成功；
-- 两个相同 title → `AMBIGUOUS_CHAT`；
-- details 包含候选 chat_id/title/username/type；
-- numeric id 不存在 → `CHAT_NOT_FOUND`；
-- 不 first-match。
-
-`chats list` 继续复用 migration-collapsed catalogue，不能重新显示 legacy Basic Group duplicate。
-
-## 6. Search tests
-
-第一版 deterministic filter：
+关键安全测试：
 
 ```text
-chat
-contains
-since inclusive
-until exclusive
-limit
-case_sensitive optional
+mypikpak.com                 match
+cdn.mypikpak.com             match
+mypikpak.com.evil.com        reject
+notmypikpak.com              reject
 ```
 
-测试 text/caption 范围；不下载媒体。
+不访问 URL、不 follow redirect。Candidate scan 有上限，不为凑满结果无限读取。
 
-时间无 tz 的 CLI parser 按本机 timezone 解释；aware datetime 原样使用。
+对已取到内存的 500 条纯文本候选，本地过滤目标 <1s；Telegram network time 单独计。
 
-## 7. Write safety tests
+## 9. Forum
 
-### forward dry-run
-
-- 完成 source/destination resolution；
-- 检查 ids；
-- 不调用 `client.forward_messages`；
-- 返回 requested/successful/failed ids；
-- `--to me` 可解析 Saved Messages。
-
-### real forward mock
-
-- 必须调用 Telethon `forward_messages`；
-- 不能改为复制 text + `send_message`；
-- media message first version 不真正 forward，进入 failed_ids。
-
-### send dry-run
-
-- 不调用 `send_message`；
-- stdout 可回显用户明确提供的 dry-run text；
-- app.log 不含 body。
-
-### real send mock
-
-- `parse_mode=None`；
-- 不附加 media/file；
-- 返回 sent message id。
-
-### limits
+Telethon 1.44 契约使用：
 
 ```text
-20 条：默认允许
-21 条：默认 INVALID_ARGUMENT
-21 条 + --allow-large-batch：允许
-200 条 + flag：允许
-201 条 + flag：拒绝
+functions.messages.GetForumTopicsRequest(peer=...)
 ```
 
-## 8. FloodWait
+不是 channels namespace。
 
-mock `FloodWaitError`，预期：
+测试 topics bounded pagination/cursor、TopicInfo 字段、topic history rich schema、非 forum → `NOT_A_FORUM`。
 
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "FLOOD_WAIT",
-    "details": {"retry_after_seconds": 37}
-  }
-}
-```
+## 10. Media metadata / explicit download
 
-不得自动循环 retry。真实账号 E2E 不要故意制造 FloodWait。
+普通 history/search/get 只测试 metadata，不能产生下载文件。
 
-## 9. Session ownership / concurrency
+`media download` 测试：
 
-第一版 Telethon SQLiteSession 由 `SessionLease` 保证单进程所有权。
+- plan 第一次 `DOWNLOAD_CONFIRMATION_REQUIRED`；
+- plan 不创建 output dir、不调用 `download_media`；
+- token 绑定 chat/ids/output/allow-large + plan digest；
+- token query mismatch/过期拒绝；
+- normal 20 files / 500 MiB；
+- large hard 200 files / 5 GiB；
+- >hard cap 在下载前拒绝；
+- filename/path traversal safety；
+- `.part` -> atomic final rename；
+- error/cancel 不留下半写最终文件；
+- confirmed transport outcome 不自动 retry。
 
-真人 E2E：
+真实账号媒体下载不是默认 E2E；只有用户明确选择测试时才产生本地文件。
 
-1. 打开 TG Exporter GUI 并连接。
-2. 另一个 shell 执行 `tgctl status --json`。
-3. 预期 `SESSION_BUSY`，无 SQLite corruption。
-4. 关闭 GUI。
-5. tgctl 再执行应正常获得 Session。
-6. 反向：让一个 tgctl 操作占用 Session 时启动 GUI，应得到友好 busy 提示。
+## 11. JSON / JSONL
 
-不要通过删除 lock file 测试解锁；真正 ownership 来自 OS lock。
+JSON：一份 envelope，stdout 不混 log。
 
-## 10. tgctl 真实账号 E2E
-
-先确保 v0.1.8 GUI 已登录并关闭 GUI。
-
-只读：
-
-```powershell
-tgctl status --json
-tgctl chats list --search "保研" --json
-tgctl chats list --folder "保研" --json
-tgctl messages search --chat <chat_id> --contains "预推免" --limit 20 --json
-tgctl messages get --chat <chat_id> --ids <message_id> --json
-```
-
-检查：无需 phone/OTP/2FA；chat_id/title 正确；文本来自真实消息；无媒体下载。
-
-## 11. 真实 Telegram 写操作 E2E
-
-只有用户明确确认后执行，优先 Saved Messages。
-
-先 dry-run：
-
-```powershell
-tgctl forward --from <chat_id> --to me --ids <message_id> --dry-run --json
-tgctl send --to me --text "TG Exporter Codex bridge test" --dry-run --json
-```
-
-确认 Telegram 没产生新消息。
-
-用户确认后真实写：
-
-```powershell
-tgctl forward --from <chat_id> --to me --ids <message_id> --json
-tgctl send --to me --text "TG Exporter Codex bridge test" --json
-```
-
-检查 Saved Messages：
-
-- forward 是真正 forward（保留 Telegram 转发来源语义）；
-- send 是纯文本；
-- 返回 JSON ids 与实际一致。
-
-不要自行向陌生人/陌生群测试。
-
-## 12. Security tests
-
-仓库/CI/app.log 不得出现：
+JSONL：
 
 ```text
-api_hash
-phone
-OTP/code
-2FA
-.session contents
-message body
-avatar bytes
+meta
+item * N
+end(count,next_cursor,has_more,timing,...)
 ```
 
-特别测试 send/forward 日志：正文字符串不能出现在 `caplog`。
+错误为单行 error。Reader page 仍 bounded，不把 Named Pipe 变成无界 stream。
 
-`status` 不输出 phone；只允许 user id/display name/username/session safe label/proxy safe label。
+## 12. Exit codes
 
-## 13. Release validation
-
-正式 v0.1.9+ Release 必须包含：
+保留历史并新增：
 
 ```text
-TGExporter-vX.Y.Z-windows-x64.exe
-TGExporter-vX.Y.Z-windows-x64-portable.zip
-tgctl.exe
-SHA256SUMS.txt
+2 INVALID_ARGUMENT
+3 NOT_AUTHORIZED/AUTH_GUI_ONLY
+4 CHAT_NOT_FOUND/MESSAGE_NOT_FOUND
+5 AMBIGUOUS_CHAT
+6 FLOOD_WAIT
+7 WRITE_FAILED
+8 SESSION_BUSY
+9 EXPORT_IN_PROGRESS
+10 WRITE_OUTCOME_UNKNOWN
+11 DAEMON_UNAVAILABLE
+12 INVALID_CURSOR/CURSOR_STALE
+13 ACCESS_DENIED/MEMBERS_UNAVAILABLE
+14 NOT_A_FORUM
+15 DOWNLOAD_CONFIRMATION_REQUIRED
+16 DOWNLOAD_LIMIT_EXCEEDED
+130 Ctrl+C
 ```
 
-Portable ZIP 内必须存在：
+Windows package test 必须用 native Process ExitCode，而不是仅看 PowerShell `$?`。
+
+## 13. Security regression
+
+必须验证普通日志不含：
 
 ```text
-TGExporter/TGExporter.exe
-TGExporter/tgctl.exe
+api_id / api_hash
+phone / OTP / 2FA
+Session / credentials
+IPC secret
+access_hash / file_reference
+message body / caption / URL text / media filename
 ```
 
-Release workflow 必须完成：
+Rich safe serializer/cursor 不得出现 `access_hash/file_reference`。写操作仍测 body 不进 caplog。
 
-```text
-pytest
-GUI + tgctl import
-GUI one-file build
-GUI portable build
-tgctl build
-GUI one-file smoke
-GUI portable smoke
-tgctl standalone smoke
-portable tgctl smoke
-SHA256SUMS
-Release upload
-```
+## 14. FloodWait
 
-Release 后核对 tag/target/draft/prerelease/assets/hashes。
+Mock → `FLOOD_WAIT + retry_after_seconds`，不自动循环 retry。真人测试不故意制造 FloodWait。
 
-## 14. Future MCP tests
+## 15. v0.3 真人只读 E2E
 
-当前不做 MCP。如果未来实现，必须新增 daemon ownership、IPC auth、tool schema、write confirmation、crash recovery 测试；不得让 MCP 绕过 tgctl 已建立的 write safety invariants。
+默认不执行 send/forward/mark-read/media download。Desktop Codex/用户本机验证：
+
+1. dialogs 覆盖 group/supergroup/channel/private/bot/Saved/archive；
+2. Chat Folder membership；
+3. Svip 最近 500 history；
+4. owner/admin；
+5. 最近 500 条谁发 pikpak；
+6. 谁发真实 mypikpak.com；是否当前 owner/admin；
+7. structured sender；
+8. anonymous admin/send-as 不误归属；
+9. history 多页无重复/遗漏；
+10. since/until；
+11. Saved Messages history/search；
+12. MESSAGE_NOT_FOUND；
+13. AMBIGUOUS_CHAT；
+14. v0.3 GUI + tgctl coexist，不应 busy；
+15. legacy direct lock → packaged `SESSION_BUSY` + exit 8；
+16. legacy lock 下 GUI safe diagnostic，无 `database is locked`；
+17. FloodWait 仅自然出现时验证；
+18. logs/stdout safety；
+19. Forum 若账号有条件；
+20. media metadata-only 不生成文件；
+21. media plan 第一次不生成文件。
+
+## 16. Candidate gate
+
+完成后记录：branch/head、pytest 数量、Windows run id、artifact、两个 EXE SHA-256、无法由 CI 验证的真实 Telegram 项目。
+
+然后**停止**：不 merge Release commit、不创建 `v0.3.0` Release，等用户本地验收与明确发布授权。
