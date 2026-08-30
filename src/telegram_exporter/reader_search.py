@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import encodings.idna as _stdlib_idna
 import re
 import time
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from telethon.tl.custom.message import Message
 
@@ -14,6 +15,7 @@ from .reader_service import MAX_PAGE_LIMIT, PersonalAccountReader, _dialog_rank
 
 CANDIDATE_SCAN_CAP = 5000
 _URL_RE = re.compile(r"(?i)(?:https?://|tg://|www\.)[^\s<>\]\[(){}\"']+")
+_DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _validate_limit(limit: int) -> int:
@@ -29,14 +31,68 @@ def _validate_limit(limit: int) -> int:
     return value
 
 
-def _normalize_domain(value: str) -> str:
-    raw = str(value or "").strip().rstrip(".")
+def _idna_hostname(hostname: str) -> str:
+    """Convert one hostname to canonical ASCII without codec lookup/network data.
+
+    Importing ``encodings.idna`` statically is deliberate: PyInstaller can see
+    and freeze this stdlib module, unlike ``text.encode('idna')`` which performs
+    a runtime codec lookup that was missing from the v0.3.0 tgctl bundle.
+    """
+
+    raw = hostname.strip().rstrip(".")
     if not raw:
         raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 不能为空。")
+    if len(raw) > 253:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 过长。")
+
+    labels: list[str] = []
+    for label in raw.split("."):
+        if not label:
+            raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 包含空域名段。")
+        try:
+            ascii_label = _stdlib_idna.ToASCII(label).decode("ascii").casefold()
+        except (UnicodeError, UnicodeDecodeError) as exc:
+            raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 包含无法编码的域名字符。") from exc
+        if not _DOMAIN_LABEL_RE.fullmatch(ascii_label):
+            raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 包含非法域名段。")
+        labels.append(ascii_label)
+    canonical = ".".join(labels)
+    if len(canonical) > 253:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 过长。")
+    return canonical
+
+
+def _normalize_domain(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 不能为空。")
+    if any(ch.isspace() for ch in raw):
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 不能包含空白字符。")
+
+    # Accept either a bare hostname or a complete URL. Parsing is entirely
+    # local; no PSL/public-suffix database and no network access are involved.
+    candidate = raw if "://" in raw else f"//{raw}"
     try:
-        return raw.encode("idna").decode("ascii").casefold()
-    except UnicodeError as exc:
-        raise TelegramBridgeError(INVALID_ARGUMENT, f"无法解析 URL 域名：{value}") from exc
+        parsed = urlsplit(candidate)
+    except ValueError as exc:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "无法解析 url-domain。") from exc
+
+    if "://" in raw and not parsed.scheme:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "完整 URL 缺少 scheme。")
+    if parsed.username is not None or parsed.password is not None:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 不接受带认证信息的 URL。")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 包含非法端口。") from exc
+    _ = port  # A valid explicit port is ignored for hostname matching.
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "无法从 url-domain 中取得 hostname。")
+    if ":" in hostname:
+        raise TelegramBridgeError(INVALID_ARGUMENT, "url-domain 目前只接受 DNS hostname，不接受 IPv6 literal。")
+    return _idna_hostname(hostname)
 
 
 def _url_hostname(value: str) -> str | None:
@@ -45,14 +101,14 @@ def _url_hostname(value: str) -> str | None:
         return None
     candidate = raw if "://" in raw else f"http://{raw}"
     try:
-        hostname = urlparse(candidate).hostname
+        hostname = urlsplit(candidate).hostname
     except ValueError:
         return None
-    if not hostname:
+    if not hostname or ":" in hostname:
         return None
     try:
-        return hostname.rstrip(".").encode("idna").decode("ascii").casefold()
-    except UnicodeError:
+        return _idna_hostname(hostname)
+    except TelegramBridgeError:
         return None
 
 
@@ -60,6 +116,30 @@ def domain_matches(hostname: str | None, wanted: str) -> bool:
     if not hostname:
         return False
     return hostname == wanted or hostname.endswith(f".{wanted}")
+
+
+def domain_filter_smoke_test() -> bool:
+    """Offline packaged regression used by CI against the final tgctl.exe."""
+
+    cases = {
+        "mypikpak.com": "mypikpak.com",
+        " www.mypikpak.com ": "www.mypikpak.com",
+        "MYPiKPAK.CoM": "mypikpak.com",
+        "https://mypikpak.com/path?q=1": "mypikpak.com",
+        "https://cdn.mypikpak.com/a": "cdn.mypikpak.com",
+    }
+    for raw, expected in cases.items():
+        if _normalize_domain(raw) != expected:
+            return False
+    if not domain_matches(_url_hostname("https://cdn.mypikpak.com/x"), "mypikpak.com"):
+        return False
+    if domain_matches(_url_hostname("https://mypikpak.com.evil.com/x"), "mypikpak.com"):
+        return False
+    try:
+        _normalize_domain("not a domain")
+    except TelegramBridgeError as exc:
+        return exc.code == INVALID_ARGUMENT
+    return False
 
 
 def _extract_urls(message: Any) -> list[str]:
@@ -155,8 +235,7 @@ def _message_matches(
     if has_link == "no" and urls:
         return False
     if url_domain:
-        wanted = _normalize_domain(url_domain)
-        if not any(domain_matches(_url_hostname(url), wanted) for url in (urls or [])):
+        if not any(domain_matches(_url_hostname(url), url_domain) for url in (urls or [])):
             return False
     return True
 
@@ -289,9 +368,8 @@ async def search_messages_page(
         raise TelegramBridgeError(INVALID_ARGUMENT, "has-link 只能是 yes/no/all。")
     if since and until and since >= until:
         raise TelegramBridgeError(INVALID_ARGUMENT, "since 必须早于 until。")
-    if url_domain:
-        _normalize_domain(url_domain)
-    if chat is None and not any((contains, sender_id, sender_role, message_type, topic_id, url_domain, has_link != "all", since, until)):
+    normalized_domain = _normalize_domain(url_domain) if url_domain else None
+    if chat is None and not any((contains, sender_id, sender_role, message_type, topic_id, normalized_domain, has_link != "all", since, until)):
         raise TelegramBridgeError(
             INVALID_ARGUMENT,
             "全局搜索至少需要一个筛选条件；如需完整历史，请按会话使用 messages history。",
@@ -316,7 +394,7 @@ async def search_messages_page(
         "message_type": message_type,
         "topic_id": topic_id,
         "has_link": has_link,
-        "url_domain": _normalize_domain(url_domain) if url_domain else None,
+        "url_domain": normalized_domain,
         "case_sensitive": bool(case_sensitive),
     }
     position = reader.cursor.decode(cursor, "messages.search", query) or {}
@@ -354,7 +432,7 @@ async def search_messages_page(
                 message_type=message_type,
                 topic_id=topic_id,
                 has_link=has_link,
-                url_domain=url_domain,
+                url_domain=normalized_domain,
             )
             matches.extend(rows)
             total_scanned += scanned
@@ -388,7 +466,7 @@ async def search_messages_page(
             raise TelegramBridgeError(INVALID_ARGUMENT, "search cursor segment 无效。")
         started_same = False
 
-        for index, row in enumerate(catalogue):
+        for row in catalogue:
             key = (_dialog_rank(row.dialog_type), row.chat_id)
             if key < (start_rank, start_chat_id):
                 continue
@@ -428,7 +506,7 @@ async def search_messages_page(
                     message_type=message_type,
                     topic_id=topic_id,
                     has_link=has_link,
-                    url_domain=url_domain,
+                    url_domain=normalized_domain,
                 )
                 matches.extend(rows)
                 total_scanned += scanned
