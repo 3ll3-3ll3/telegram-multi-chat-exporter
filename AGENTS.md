@@ -1,225 +1,227 @@
 # AGENTS.md
 
-本文件是任何后续 Agent / Codex / 自动化开发者进入本仓库后的**第一阅读入口**。除非用户明确改变产品方向，否则以下规则视为项目长期不变量。
+本文件是任何后续 Agent / Codex / 自动化开发者进入本仓库后的**第一阅读入口**。除非用户明确改变产品方向，否则以下规则视为长期不变量。
 
-## 1. 开工前必须阅读
+## 1. 开工前必须完成的恢复流程
 
-按顺序阅读：
+在修改任何代码、Workflow、Release 或用户本机数据之前，按顺序完成：
 
-1. `AGENTS.md`
-2. `HANDOFF.md`
-3. `docs/ARCHITECTURE.md`
-4. `docs/DECISIONS.md`
-5. `docs/TESTING.md`
-6. `docs/RELEASE_PROCESS.md`
-7. `SECURITY.md`
-8. 涉及 CLI/Codex 时读 `docs/CODEX_TGCTL.md`
-9. 涉及 JSON 兼容时读 `docs/JSON_COMPATIBILITY.md`
+1. 读 `AGENTS.md`；
+2. 读 `HANDOFF.md`；
+3. 读 `README.md`；
+4. 读 `docs/ARCHITECTURE.md`；
+5. 读 `docs/SECURITY_MODEL.md` 和根目录 `SECURITY.md`；
+6. 读 `docs/TESTING.md`、`docs/DEPLOYMENT.md`、`docs/RELEASE_PROCESS.md`；
+7. 涉及当前 v0.3 工作时，读 PR #20 及其分支中的 `docs/PERSONAL_ACCOUNT_READER_V3_DESIGN.md`、`docs/DAEMON_IPC_DESIGN.md`；
+8. 读与当前任务相关的 `docs/decisions/` ADR；
+9. 核对默认分支、当前开发分支、最新 commit、open PR、CI、Release/Tag；
+10. 在确认仓库事实与 `HANDOFF.md` 一致前，不修改代码。
 
-不要仅凭 README 推断当前实现状态；`HANDOFF.md` 才是开发交接快照。
+不要只凭 README、聊天记忆或旧分支判断当前状态。**GitHub 当前事实优先，`HANDOFF.md` 负责解释正式线与开发线之间的关系。**
 
-## 2. 产品核心定位
+## 2. 当前代际与状态发现规则
 
-TG Exporter 以 **Windows GUI Telegram 多群独立文本导出器**为主，从 v0.1.9 起同时包含一个**本地 `tgctl` CLI Bridge**，供 Codex 手动调用用户自己的 Telegram Session。
+项目采用以下统一版本叙述：
 
-这不是 Telegram 客户端替代品、累计归档数据库、Bot API 产品、MCP Server、长期监听服务或 AI 自主 Agent。
+```text
+v0.1.x = 第一代：GUI exporter + direct-session tgctl
+v0.2.0 = 第二代：single daemon + Windows Named Pipe IPC
+v0.3.0 = 第三代：v0.2 daemon + Personal Account Reader
+```
+
+截至 2026-08-30：
+
+- 正式 Production Release：`v0.1.10`；
+- `main`：`cedb02035597aa607fac399666154519f480c431`；
+- 当前实现开发线：`codex/personal-account-reader-v0.3.0`，Draft PR #20；
+- PR #17 / #19 是历史设计 PR，不是当前实施入口；
+- 当前第三代在真人 Telegram E2E 通过并获得用户明确发布授权前，不得 merge/release。
+
+这些值会变化；每次接手必须重新核对 GitHub，并更新 `HANDOFF.md`。
+
+## 3. Production 在本项目中的含义
+
+本项目**没有远程生产数据库、云端生产服务或服务器部署**。
+
+这里的 Production 指：
+
+1. GitHub Releases 上已正式发布的 Windows 二进制；
+2. 用户本机 `%APPDATA%\TelegramMultiChatExporter\` 中的真实 Telegram Session、API 配置、设置、checkpoint、日志和 cache；
+3. 用户真实 Telegram 账号及其可见聊天。
+
+因此“生产安全”主要是：不破坏正式 Release 历史、不泄露/损坏本机 Session、不擅自执行 Telegram write、不删除用户导出历史。
+
+## 4. Git / PR / Release 纪律
+
+仓库当前分支没有 GitHub branch protection，**所以 Agent 必须自行强制执行流程纪律**：
+
+- 不直接把功能代码 push 到 `main`；
+- 不 force-push `main`；
+- 不移动、覆盖或删除历史 Release tag；
+- 不覆盖已有 GitHub Release；
+- 功能/修复：latest main → 独立分支 → tests → PR → Windows CI → 用户需要的真人 E2E → 明确发布授权 → merge/release；
+- Actions Artifact 是临时候选，不是正式长期下载；正式用户资产只认 GitHub Release；
+- CI 失败由开发 Agent 自己读取日志、修复、重跑，不把失败任务留给用户；
+- 正式 Release 只有在 tag、target commit、assets、SHA256、workflow 全部核验后才能对用户宣称“已发布”。
+
+## 5. 产品核心不变量
+
+TG Exporter 是 Windows Telegram 文本导出器，并逐步增加 Codex 本地读取/操作接口；不是 Telegram Desktop 替代品、累计归档数据库、云服务或 Bot API 产品。
 
 GUI 导出必须保持：
 
-- 每次对某群导出都是独立 JSON；历史 JSON 不读取、不合并、不回写。
-- 输出：`总输出目录 / 导出分类 / 群组 / YYYY-MM-DD_HH-mm-ss.json`。
-- 同秒冲突追加 `_2/_3/...`，不得覆盖。
-- Export Category 是 TG Exporter 本地分类，不是 Telegram Chat Folder。
-- 每群独立 date range / current unread / since last export。
-- 聊天消息不下载照片/视频/文件/语音/贴纸；caption 可保留。
-- 群/频道资料头像仅是选择器 UI 例外，不进入 JSON。
-- JSON 是权威数据源。
-
-## 3. tgctl / Codex 长期安全边界
-
-`tgctl` 的架构必须保持：
-
-```text
-Codex
-→ 本地 tgctl
-→ 共享 TelegramService
-→ 共享 TG Exporter Session / proxy
-→ Telethon user account
-```
-
-不得复制 Telegram 登录系统。CLI 必须继续复用：
-
-```text
-%APPDATA%\TelegramMultiChatExporter\api_credentials.json
-%APPDATA%\TelegramMultiChatExporter\telegram.session
-```
-
-以及现有 Windows system proxy detection。
-
-如果 Session 未授权，CLI 只返回 `NOT_AUTHORIZED` 并提示先打开 TG Exporter 登录；不得在 tgctl 里重新做 phone / OTP / 2FA 交互登录。
-
-读取类操作可直接执行：
-
-```text
-status
-chats list
-messages search
-messages get
-```
-
-写入类操作当前只有：
-
-```text
-forward
-send
-```
-
-规则：
-
-- `forward` 必须使用 Telegram 真正 forward，不能静默退化为复制正文 + send。
-- `send` 第一版只做纯文本。
-- forward/send 必须支持 `--dry-run`。
-- forward 默认最多 20 条；`--allow-large-batch` 后最多 200 条；不要移除这个闸门或把默认提高到危险值。
-- FloodWait 不疯狂自动重试；返回结构化等待秒数。
-- 同名/模糊 chat 不得静默选择；必须返回 `AMBIGUOUS_CHAT` 和候选 chat_id。
-- 核心命令 `--json` stdout 必须只输出 JSON envelope；日志不得混入 stdout。
-- 写操作日志只记录动作、chat_id、message_id/数量和结果，**不得记录聊天正文**。
-- **未来 Agent 不得擅自让 Codex 写操作绕过 dry-run/批量上限/歧义检查/FloodWait/Session lock 等安全边界。**
-- 不得增加自动规则转发、24/7 listener、群管理、删除消息、联系人管理、管理员操作等能力，除非用户重新明确提出并重新评估安全设计。
-
-## 4. Shared Session 进程所有权
-
-Telethon 默认 SQLiteSession 不应由 GUI 与 CLI 两个进程同时打开。
-
-v0.1.9 起 `TelegramService` 自身拥有 Session OS lock，因此所有复用该 Service 的入口自动受保护。
-
-第一版约束：
-
-- GUI 与 tgctl 不能同时拥有同一 Session；
-- 后启动者得到 `SessionBusyError` / `SESSION_BUSY`；
-- 不得为了“方便并发”绕过 lock、复制 Session 或创建隐藏的第二 Session；
-- 未来若要 GUI + CLI + MCP 并发，应采用单一 Telegram daemon 持有 Session，其他客户端走 IPC。
-
-本版不要提前实现 daemon/MCP。
-
-## 5. 群组工作区、Telegram 分组与导出分类
-
-- 完整账号列表只作为 catalogue；主 GUI 只显示 focused workspace。
-- 已选群 ID 保存在 `settings.json`。
-- Telegram Chat Folders / Dialog Filters 只读，用于筛选 catalogue。
-- Export Category 是本地落盘分类，保存在 `export_categories` / `group_export_categories`。
-- 内置 `未分类` 作为兜底。
-- 群头像按需加载、受限并发、本地缓存；失败不得阻断功能。
-- `tgctl chats list` 应复用同一 catalogue / Chat Folder / migration collapse，不再造第二套群读取逻辑。
+- 每群每次导出独立 JSON；历史 JSON 不读取、不合并、不覆盖；
+- 输出结构：`总输出目录 / Export Category / 群组 / YYYY-MM-DD_HH-mm-ss.json`；同秒冲突 `_2/_3/...`；
+- Export Category 是软件本地分类，不是 Telegram Chat Folder；分类不存在时软件自动建目录；
+- 每群独立 date range / current unread / since last successful export；
+- GUI 消息导出只保留文字/caption，不下载聊天媒体；群头像仅 selector UI cache 例外；
+- Telegram Desktop JSON 只追求纯文本范围内兼容，不扩成完整媒体备份；
+- `%APPDATA%\TelegramMultiChatExporter\` 是兼容路径，品牌改名也不得擅自迁移；
+- 软件删除分类不得删除已有磁盘导出历史。
 
 ## 6. Basic Group → Supergroup
 
-从 v0.1.8 起：
+长期规则：
 
-- 旧 Basic Group 和当前 Supergroup 不得同时作为两条 catalogue row。
-- 当前 Supergroup 是主实体；不得删除/退出/修改真实超级群。
-- legacy peer id 保存在 `migrated_from_chat_id`。
-- current unread / since-last 只针对当前 Supergroup。
-- GUI date-range 可读取 legacy + current 并按时间合并。
-- tgctl catalogue 同样只能暴露当前逻辑群，不能重新扩大重复群问题。
-- 不按“同名”猜 migration，只依赖 Telegram 显式迁移关系。
+- catalogue 只显示当前 logical Supergroup；
+- legacy Basic Group 只用于 migration/history 兼容；
+- 不按同名猜 migration，只依据 Telegram 显式关系；
+- 不删除、退出、降级或修改用户真实 Supergroup；
+- current unread / since-last 只针对当前 Supergroup；
+- date-range/history 可读取 current + legacy；
+- 迁移历史的唯一定位键是 `(source_chat_id, message_id)`，不能只按 message id 去重；
+- v0.3 rich history/search/get 对 legacy 消息仍应保持 `chat_id=current logical supergroup`、`source_chat_id=legacy basic group`；
+- owner/admin/member current snapshot 必须基于当前 logical chat，而不是 legacy peer。
 
-## 7. 未读与已读策略
+## 7. current unread / read acknowledgement
 
-current unread 使用刷新 catalogue 时冻结的：
+current unread 使用冻结边界。GUI “导出后标已读”默认 OFF，只在 current-unread 模式可用。
 
-```text
-read_inbox_max_id < message_id <= latest_message_id_at_refresh
-```
-
-GUI Option B `导出后标已读`：默认 OFF，仅 current unread 可用。
-
-严格顺序：
+顺序不可改变：
 
 ```text
 JSON 原子写入成功
 → checkpoint 更新
-→ 可选 read acknowledgement
+→ 可选 Telegram read acknowledgement
 ```
 
-导出失败绝不改变 read marker；read ack 失败不删除 JSON。
+导出失败绝不标已读；read ack 失败不删除已经成功的 JSON。
 
-本版 tgctl 不需要提供 mark-read；未来若增加，必须重新遵守明确 write-operation 安全边界。
+## 8. qasync / GUI 永久踩坑
 
-## 8. qasync / GUI
+Qt + Telethon 共享 qasync 单事件循环。历史上 blocking modal/nested event loop 导致 task re-entry。
 
-Telethon 与 Qt 共用 qasync 单事件循环。历史上 blocking modal API 导致 task re-entry。
+- async flow 中不得重新引入 `QDialog.exec()`、static blocking QMessageBox/QInputDialog 等 nested modal；
+- 继续使用 non-blocking dialog + await completion；
+- shutdown 必须兼容 `disconnect()` 返回 awaitable 或同步完成；
+- 清理失败不能变成 PyInstaller 顶层 fatal dialog；
+- tgctl/Core 不应为了 CLI 被迫依赖 Qt。
 
-- async slot 中不得重新引入 `QDialog.exec()`、static QMessageBox/QInputDialog 等 nested event loop。
-- 使用现有 non-blocking dialog + await finished。
-- 头像任务同一 asyncio/qasync loop。
-- shutdown 必须兼容 Telethon `disconnect()` 返回 awaitable 或同步完成。
-- shutdown 清理失败不得变成 PyInstaller 顶层 fatal dialog。
-- tgctl 不依赖 Qt，不得为了 CLI 把 Qt 引进 Telegram Core。
+## 9. v0.1.x tgctl 写安全
 
-## 9. 网络、Secret 与日志
+正式 v0.1.10 的 `tgctl` 继续遵守：
 
-- Windows system proxy 显式传给 Telethon。
-- 兼容目录固定 `%APPDATA%\TelegramMultiChatExporter\`，不要因品牌变化迁移。
-- 严禁提交/打印：api_hash、phone、OTP/code、2FA、Session 内容、真实聊天正文、真实头像 cache。
-- `local_state.json` 只存 checkpoint。
-- CLI `messages search/get` 的正文可以作为用户明确请求的 stdout 数据，但**不得进入普通日志**。
-- 新增 debug 日志前先确认对象 `repr()` 不会泄露敏感字段。
+- 复用 GUI 已登录 Session，不做第二套 phone/OTP/2FA CLI 登录；
+- `forward` 是 Telegram true forward，不能静默复制正文 + send；
+- `send` 只发纯文本，`parse_mode=None`；
+- forward/send 保留 `--dry-run`；
+- forward 默认 <=20，显式 large 后 hard cap 200；
+- 同名 chat → `AMBIGUOUS_CHAT`，不得 first-match；
+- FloodWait 返回结构化等待秒数，不 retry storm；
+- write log 不记录正文；
+- packaged `SESSION_BUSY` JSON + native exit code 8 是回归契约。
 
-## 10. Telegram Desktop JSON
+v0.1.x direct GUI/tgctl 的 SessionLease 互斥属于正式版兼容语义，不要在 hotfix 中绕锁或复制 Session。
 
-GUI 导出仍以纯文本范围内尽量兼容 Telegram Desktop 为目标，不做完整媒体备份。已知差异继续维护在 `docs/JSON_COMPATIBILITY.md`。
+## 10. v0.2/v0.3 single-daemon 不变量
 
-tgctl 的 JSON 是独立的机器调用协议，不要求伪装成 Telegram Desktop export JSON；它必须保持稳定 envelope/error code。
+在 PR #20 / v0.3 线工作时，架构必须保持：
 
-## 11. 当前明确不做
+```text
+TG daemon（唯一 TelegramService / Telethon / telegram.session owner）
+├─ TG Exporter GUI IPC client
+├─ tgctl IPC client
+└─ future MCP client（当前不实现）
+```
 
-除非用户再次明确提出：
+- GUI/tgctl 不得 fallback direct Session；
+- IPC 使用 authenticated Windows Named Pipe / AF_PIPE + UTF-8 JSON bytes；禁止 pickle transport；不开 TCP/HTTP/Web Server；
+- GUI 与同代 tgctl 正常共存，不应互相 `SESSION_BUSY`；`SESSION_BUSY` 只用于 legacy/direct process 已锁 Session 的兼容边界；
+- GUI 关闭/崩溃时 daemon-side export 可继续；GUI 重开读取安全 job metadata；
+- tgctl/Codex 可按需唤醒 daemon；无 GUI/job/request 后约 10 分钟 idle exit；
+- daemon 有 Windows tray，但 tray 异常不能使后台功能失败；
+- export 活跃时 Telegram reader 等待；真实 send/forward 立即 `EXPORT_IN_PROGRESS`，不得排队后偷偷发送；
+- write 请求已交给 daemon 后 transport outcome unknown → `WRITE_OUTCOME_UNKNOWN`，绝不自动 retry；
+- phone/OTP/2FA 仍只由 GUI 交互。
 
-- MCP Server；
-- Web Server / 云端服务；
+## 11. v0.3 Personal Account Reader 安全边界
+
+Reader 默认 Telegram read-only：
+
+```text
+account get
+dialogs list
+chats get
+chats members
+messages history/search/get
+topics list/history
+media metadata
+```
+
+读取不得发送、转发、删除、退群、改 Chat Folder、投票、标已读或自动下载媒体。
+
+Reader 使用独立模型，不把 private/bot/Saved Messages 强塞进 GUI `GroupInfo`。
+
+分页：default 100 / max 500；不得提供隐藏的无界 history。Cursor 必须 opaque/HMAC/query-bound，不含 `access_hash`、`file_reference`、Session/credential。
+
+owner/admin/member 是查询时 current snapshot；匿名管理员/send-as 不得从显示名、`post_author` 或管理员列表反推真实 user。
+
+`--url-domain` 必须解析 hostname；`example.com.evil.test` 不得匹配 `example.com`，且不访问 URL、不 follow redirect。
+
+显式 `media download` 是本地磁盘副作用：必须 plan → confirmation token → download；normal 20 files/500 MiB，explicit large hard cap 200 files/5 GiB；`.part` 成功后原子 rename。
+
+## 12. Secret / 日志 / 本地数据
+
+禁止提交、stdout（非用户明确 reader 结果）、普通日志、cursor、异常 repr 泄露：
+
+- `api_id` / `api_hash`；
+- phone / OTP / 2FA；
+- `*.session`、session journal、credentials；
+- Telegram `access_hash` / `file_reference`；
+- IPC auth secret；
+- 用户真实聊天正文、导出 JSON、头像 cache。
+
+消息正文只有在用户明确执行 history/search/get 等 reader 命令时才允许出现在该命令 stdout JSON/JSONL；普通 `app.log` 不得记录正文、caption、URL 文本或媒体文件名。
+
+不得通过删除 lock 文件、复制 Session、迁移 AppData 来“修复”并发问题。
+
+## 13. 明确非目标 / 已否决方向
+
+除非用户重新明确要求并重新进行安全设计，不做：
+
+- MCP Server（future direction，不是 v0.3 范围）；
+- Web/TCP server / 云端服务；
 - Telegram Bot API / bot account；
-- 长期监听；
-- 自动转发规则引擎；
-- AI 分类器；
-- 消息媒体下载/媒体发送/媒体转发；
-- 联系人/群/管理员管理；
-- 删除消息；
-- 360/杀软误报、自动白名单、代码签名。
+- 24/7 listener；
+- 自动转发规则 / AI 自主分类；
+- 联系人、群、管理员管理；
+- 删除消息、退群、修改 Chat Folder；
+- Secret Chat / 已删除消息恢复 / 绕权读取；
+- 媒体发送/媒体转发；
+- 360/杀软误报、自动白名单、代码签名作为当前主线。
 
-## 12. Git / CI / Release
+## 14. 测试与真人 E2E
 
-默认流程：最新 main → 功能分支 → tests → PR → Windows CI → CI 全绿 → 合并 → 用户可见二进制变化发 Release。
+CI 不能保存用户真实 Telegram credential，也不能替代真实账号 E2E。
 
-不得强推 main，不得把失败 CI 留给用户，不得把 Actions Artifact 当正式长期下载。
+代码变化至少按 `docs/TESTING.md` 执行；Windows binary 变化必须通过 PyInstaller/package smoke。涉及 Telegram write 的真人测试优先 Saved Messages，先 dry-run，再由用户明确确认；不要自行向陌生群/联系人发消息，不要故意制造 FloodWait。
 
-v0.1.9+ 最低 CI：
+v0.3 Candidate 当前发布闸门：真人只读 E2E 未完成前，不继续堆新功能、不 merge PR #20、不创建/覆盖 v0.3.0 Release。
 
-```text
-pytest -q
-GUI + tgctl import check
-TGExporter PyInstaller build
-TGExporter packaged smoke-test
-tgctl PyInstaller build
-tgctl packaged smoke-test
-```
+## 15. 交接纪律
 
-Release 还必须：
+任何用户可见功能、关键 bug、架构、安全策略、正式 Release、Candidate、真人 E2E 状态变化后都必须更新 `HANDOFF.md`。
 
-```text
-TGExporter one-file
-TGExporter portable
-portable 内 tgctl.exe
-standalone tgctl.exe
-全部 packaged smoke-test
-SHA256SUMS
-GitHub Release upload
-```
+长期不可逆决策：优先写入 `docs/decisions/` ADR，并在 `docs/DECISIONS.md` 建索引。
 
-真实 Telegram 写操作不能由 CI 替代，必须在 HANDOFF 明确哪些仅 mock、哪些用户已 E2E。
-
-## 13. 交接纪律
-
-用户可见功能、关键 bug、架构、安全策略、Release 或真人 E2E 状态改变后必须更新 `HANDOFF.md`；长期决策同时更新 `docs/DECISIONS.md`。
-
-合格交接必须能回答：最新版、main 未发布状态、哪些已真人验证、哪些仅 CI、当前安全边界、下一步优先事项。
+一个合格的新对话恢复必须能仅凭仓库回答：当前正式版/commit、当前开发 branch/PR、当前任务、CI/E2E 状态、已知风险、安全禁区、下一步。
