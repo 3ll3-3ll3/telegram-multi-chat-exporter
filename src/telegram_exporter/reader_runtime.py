@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import replace
 from typing import Any
 
@@ -12,7 +11,6 @@ from .bridge_errors import INVALID_ARGUMENT, MESSAGE_NOT_FOUND, TelegramBridgeEr
 from .reader_models import ChatDetails, DialogInfo, MessageInfoV3, ParticipantInfo, SenderInfo
 from .reader_service import (
     MAX_PAGE_LIMIT,
-    ROLE_CACHE_TTL_SECONDS,
     PersonalAccountReader,
     _display_name,
     _participant_info,
@@ -62,7 +60,8 @@ class PersonalAccountReaderV3(PersonalAccountReader):
     ) -> tuple[dict[int, ParticipantInfo], bool]:
         # Historical messages may come from a legacy Basic Group while the
         # logical chat is the current Supergroup. Current owner/admin role must
-        # always be evaluated on the current logical entity.
+        # always be evaluated on the current logical entity, then delegate to
+        # the established base snapshot contract.
         if row.dialog_type in {"group", "supergroup", "channel"}:
             source_id = _safe_peer_id(entity)
             if source_id is not None and source_id != row.chat_id:
@@ -72,83 +71,79 @@ class PersonalAccountReaderV3(PersonalAccountReader):
                     self._owner_visibility_hint[row.chat_id] = "participants_unavailable"
                     return {}, False
 
-        cached = self._role_cache.get(row.chat_id)
-        now = time.monotonic()
-        if cached and now - cached[0] < ROLE_CACHE_TTL_SECONDS:
-            return cached[1], cached[2]
+        snapshot, available = await super()._admin_snapshot(row, entity)
+        if any(item.is_creator for item in snapshot.values()):
+            self._owner_visibility_hint[row.chat_id] = "available"
+        elif not available:
+            self._owner_visibility_hint[row.chat_id] = "participants_unavailable"
+        else:
+            self._owner_visibility_hint[row.chat_id] = "telegram_not_returned"
+        return snapshot, available
 
-        snapshot: dict[int, ParticipantInfo] = {}
-        available = True
-        visibility = "telegram_not_returned"
+    async def _diagnose_owner_visibility(self, row: DialogInfo, entity: Any) -> str:
+        """Explain an absent owner without guessing from names or message text.
+
+        This probe is only used by ``chats get`` when the normal current admin
+        snapshot contains no creator. It is bounded and read-only, so message
+        history/search do not pay for a duplicate participant scan.
+        """
+
         try:
             if row.dialog_type == "group":
                 participants, _ = await self._basic_chat_participants(entity)
-                for item in participants:
-                    if item.is_admin:
-                        snapshot[item.user_id] = item
-                visibility = "available" if any(item.is_creator for item in snapshot.values()) else "not_found"
-            elif row.dialog_type in {"supergroup", "channel"}:
-                offset = 0
-                scanned = 0
-                complete = False
-                while scanned < MAX_PAGE_LIMIT:
-                    request_limit = min(100, MAX_PAGE_LIMIT - scanned)
-                    result = await self.client(
-                        functions.channels.GetParticipantsRequest(
-                            channel=entity,
-                            filter=types.ChannelParticipantsAdmins(),
-                            offset=offset,
-                            limit=request_limit,
-                            hash=0,
-                        )
+                return "available" if any(item.is_creator for item in participants) else "not_found"
+            if row.dialog_type not in {"supergroup", "channel"}:
+                return "not_applicable"
+
+            offset = 0
+            scanned = 0
+            complete = False
+            while scanned < MAX_PAGE_LIMIT:
+                request_limit = min(100, MAX_PAGE_LIMIT - scanned)
+                result = await self.client(
+                    functions.channels.GetParticipantsRequest(
+                        channel=entity,
+                        filter=types.ChannelParticipantsAdmins(),
+                        offset=offset,
+                        limit=request_limit,
+                        hash=0,
                     )
-                    participants = list(getattr(result, "participants", None) or ())
-                    users = {
-                        int(getattr(user, "id", 0) or 0): user
-                        for user in getattr(result, "users", None) or ()
-                    }
-                    if not participants:
-                        complete = True
-                        break
-                    for participant in participants:
-                        user_id = _participant_user_id(participant)
-                        user = users.get(int(user_id or 0))
-                        if user is not None:
-                            item = _participant_info(user, participant)
-                            if item.is_admin:
-                                snapshot[item.user_id] = item
-                    offset += len(participants)
-                    scanned += len(participants)
-                    if len(participants) < request_limit:
-                        complete = True
-                        break
-
-                if any(item.is_creator for item in snapshot.values()):
-                    visibility = "available"
-                elif not complete and scanned >= MAX_PAGE_LIMIT:
-                    visibility = "creator_not_in_returned_page"
-                else:
-                    # A complete channel-admin query with no creator is not
-                    # proof that the account has no owner. Telegram simply did
-                    # not return a creator row in the visible admin result.
-                    visibility = "telegram_not_returned"
-            else:
-                available = False
-                visibility = "not_applicable"
+                )
+                participants = list(getattr(result, "participants", None) or ())
+                users = {
+                    int(getattr(user, "id", 0) or 0): user
+                    for user in getattr(result, "users", None) or ()
+                }
+                if not participants:
+                    complete = True
+                    break
+                for participant in participants:
+                    user_id = _participant_user_id(participant)
+                    user = users.get(int(user_id or 0))
+                    if user is not None and _participant_info(user, participant).is_creator:
+                        return "available"
+                offset += len(participants)
+                scanned += len(participants)
+                if len(participants) < request_limit:
+                    complete = True
+                    break
+            if not complete and scanned >= MAX_PAGE_LIMIT:
+                return "creator_not_in_returned_page"
+            return "telegram_not_returned"
         except RPCError as exc:
-            available = False
-            visibility = _owner_rpc_visibility(type(exc).__name__)
-
-        self._role_cache[row.chat_id] = (now, snapshot, available)
-        self._owner_visibility_hint[row.chat_id] = visibility
-        return snapshot, available
+            return _owner_rpc_visibility(type(exc).__name__)
 
     async def chat_details(self, chat: str | int) -> ChatDetails:
         details = await super().chat_details(chat)
         if details.owner is not None or details.chat_type not in {"group", "supergroup", "channel"}:
             return details
-        hint = self._owner_visibility_hint.get(details.chat_id)
-        return replace(details, owner_visibility=hint or details.owner_visibility)
+        try:
+            row, entity = await self.resolve_dialog(details.chat_id)
+            visibility = await self._diagnose_owner_visibility(row, entity)
+        except TelegramBridgeError:
+            visibility = self._owner_visibility_hint.get(details.chat_id, "telegram_not_returned")
+        self._owner_visibility_hint[details.chat_id] = visibility
+        return replace(details, owner_visibility=visibility)
 
     async def _sender_info(
         self,
