@@ -25,15 +25,15 @@ v0.3.1 Candidate gate 至少要求：
 
 ```text
 full pytest
-v0.3.1 domain / GUI-shutdown / sender focused regressions
+v0.3.1 domain / regex / GUI-shutdown / sender focused regressions
 compileall
 git diff --check
 GUI + daemon + reader + CLI import
-source url-domain smoke
+source search-filter offline smoke
 TGExporter one-file PyInstaller
 TGExporter portable onedir PyInstaller
 tgctl one-file PyInstaller
-standalone + portable packaged url-domain smoke
+standalone + portable packaged domain+regex search-filter smoke
 standalone + portable legacy OS Session lock → packaged SESSION_BUSY JSON + native exit 8
 one-file + portable GUI smoke
 standalone + portable tgctl smoke
@@ -42,17 +42,7 @@ candidate SHA-256 generation
 artifact upload
 ```
 
-First fully green v0.3.1 runtime candidate before documentation-only commits:
-
-```text
-runtime: 9496416e081178d87e2fed3ccda0c248c3c18c40
-Windows run: 33302689526 = success
-pytest: 125 passed in 1.94s
-focused regressions: 30 passed in 0.52s
-artifact: 9729505508
-```
-
-Hashes are recorded in `docs/releases/v0.3.1.md` and `HANDOFF.md`. Final PR-head CI must also pass after documentation commits.
+The earlier fully green runtime head `9496416e081178d87e2fed3ccda0c248c3c18c40` / run `33302689526` predates the required regex implementation. Its 125-pass result and hashes remain traceability only; the final candidate must come from the current PR head after regex was added.
 
 ## 2. GUI / daemon regression
 
@@ -101,7 +91,10 @@ export lower < id <= upper
 
 覆盖 default 100/max 500、HMAC sign/verify、method/query mismatch、tamper、不含 access_hash/file_reference/credential、dialogs stable pagination、history 2+ pages no overlap/gap、migration current→legacy、search continuation、`INVALID_CURSOR`、`CURSOR_STALE`。
 
-v0.3.1 url-domain 的 cursor query 必须绑定**规范化后的 hostname**。等价的大小写/完整 URL 输入应可续页；不同域名必须 `INVALID_CURSOR`。
+v0.3.1：
+
+- url-domain cursor query 绑定规范化后的 hostname；等价大小写/完整 URL 可续页，不同域名必须 `INVALID_CURSOR`；
+- regex 原文 + case-sensitive 状态进入 query fingerprint；换 regex 或大小写语义后旧 cursor 不得复用。
 
 ## 5. Dialogs/account
 
@@ -144,11 +137,26 @@ telegram_sender_not_provided
 
 Migration history 唯一键 `(source_chat_id,message_id)`，不能只按 message id 去重。legacy source 的 logical `chat_id` 仍是 current Supergroup，`source_chat_id` 指 legacy Basic Group。
 
-## 9. Advanced search / url-domain
+## 9. Advanced search / regex / url-domain
 
-测试 single/global、contains、sender-id、current sender-role、since/until、message type、topic、has-link、url-domain、cursor。
+测试 single/global、contains、regex、sender-id、current sender-role、since/until、message type、topic、has-link、url-domain、cursor。
 
-v0.3.1 domain cases：
+Regex 长期 gate：
+
+```text
+default case-insensitive              match
+--case-sensitive                      exact case
+invalid / empty regex                 INVALID_ARGUMENT before Telegram work
+pattern length > 512                  INVALID_ARGUMENT
+same regex + same semantics cursor    continue without overlap
+changed regex with old cursor         INVALID_CURSOR
+regex + domain + sender-role          compose as AND filters
+legacy schema + regex                 INVALID_ARGUMENT
+```
+
+Regex 只做本地 bounded filtering，不能把 scan cap 取消成全账号无限扫描。
+
+Domain cases：
 
 ```text
 mypikpak.com                         canonical/match
@@ -163,7 +171,7 @@ malformed host                       INVALID_ARGUMENT
 no match                              empty valid page
 ```
 
-域名规范化必须离线，不依赖 PSL/network。CI 必须直接运行最终 standalone 和 portable `tgctl.exe --smoke-test-url-domain`，不能只测源码。
+域名规范化必须离线，不依赖 PSL/network。CI 必须直接运行最终 standalone 和 portable `tgctl.exe --smoke-test-search-filters`，同时覆盖 domain 与 regex 的 frozen runtime 路径，不能只测源码。
 
 ## 10. Forum
 
@@ -232,7 +240,7 @@ Mock → `FLOOD_WAIT + retry_after_seconds`，不 retry storm。真人测试不�
 2. dialogs 覆盖 group/supergroup/channel/private/bot/Saved/archive；
 3. `chats get`、members admin/owner；
 4. 最近 500 history；
-5. search contains/url-domain/sender/sender-role 以及可用的 regex 能力；
+5. search contains/regex/url-domain/sender/sender-role；
 6. two-page cursor no overlap，跨查询 → `INVALID_CURSOR`；
 7. since/until 时区边界；
 8. Saved Messages `me`；
