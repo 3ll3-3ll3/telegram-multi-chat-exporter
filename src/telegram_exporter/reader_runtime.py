@@ -63,10 +63,10 @@ class PersonalAccountReaderV3(PersonalAccountReader):
     def sender_role_filter_scope(self, sender_role: str | None) -> Iterator[None]:
         """Bound extra sender work to one advanced-search request.
 
-        The scope is entered for every v3 messages.search call. A non-empty
-        sender role enables the current-admin snapshot and a request-local
-        sender entity cache. Ordinary searches keep both disabled, while
-        history/get/chat operations remain on their existing code paths.
+        The scope is entered for v3 messages.search. A non-empty sender role
+        enables the current-admin snapshot and a request-local sender entity
+        cache. Ordinary searches keep both disabled, while history/get/chat
+        operations remain on their existing code paths.
         """
 
         token = self._sender_role_search.set(
@@ -326,7 +326,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
 
         role = role_snapshot.get(int(sender_id or 0)) if sender_type == "user" and sender_id is not None else None
         display_name = _display_name(sender)
-        if display_name is None and current_chat_sender:
+        if display_name is None and posted_as == logical_row.chat_id:
             display_name = logical_row.title
 
         unknown_reason = None
