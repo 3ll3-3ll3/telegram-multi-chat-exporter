@@ -32,6 +32,30 @@ def _peer_kind(value: Any) -> str | None:
     return None
 
 
+def _raw_peer_id(value: Any) -> int | None:
+    """Return a marked peer id for Telegram-provided sender peer fields.
+
+    ``_safe_peer_id`` remains the normal entity path. This helper only adds
+    deterministic fallbacks for raw Peer* constructors that may not be fully
+    hydrated in a Telethon Message.
+    """
+
+    peer_id = _safe_peer_id(value)
+    if peer_id is not None:
+        return peer_id
+    name = type(value).__name__ if value is not None else ""
+    if name == "PeerUser":
+        raw = getattr(value, "user_id", None)
+        return int(raw) if isinstance(raw, int) and raw else None
+    if name == "PeerChat":
+        raw = getattr(value, "chat_id", None)
+        return -int(raw) if isinstance(raw, int) and raw else None
+    if name == "PeerChannel":
+        raw = getattr(value, "channel_id", None)
+        return -(1_000_000_000_000 + int(raw)) if isinstance(raw, int) and raw else None
+    return None
+
+
 def _owner_rpc_visibility(error_name: str) -> str:
     if error_name in {
         "ChatAdminRequiredError",
@@ -211,7 +235,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
         async def resolve_sender_once(peer: Any) -> Any:
             if sender_cache is None or peer is None:
                 return None
-            peer_id = _safe_peer_id(peer)
+            peer_id = _raw_peer_id(peer)
             if peer_id is None and isinstance(peer, int) and peer:
                 peer_id = int(peer)
             if peer_id is None:
@@ -232,7 +256,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             resolution_peer = raw_sender_peer
             if resolution_peer is None and isinstance(sender_id_property, int) and sender_id_property:
                 resolution_peer = int(sender_id_property)
-            current_raw_id = _safe_peer_id(raw_sender_peer)
+            current_raw_id = _raw_peer_id(raw_sender_peer)
             is_current_chat_peer = (
                 current_raw_id is not None
                 and current_raw_id == logical_row.chat_id
@@ -262,7 +286,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
         sender_kind = _peer_kind(sender) or raw_kind
         sender_id = _safe_peer_id(sender)
         if sender_id is None:
-            sender_id = _safe_peer_id(raw_sender_peer)
+            sender_id = _raw_peer_id(raw_sender_peer)
         if sender_id is None and isinstance(sender_id_property, int) and sender_id_property:
             sender_id = int(sender_id_property)
 
@@ -281,7 +305,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
         # even when sender_id is already populated. The raw peer establishes
         # that the actual poster is the channel rather than an unknown user.
         if raw_from is None and logical_row.dialog_type == "channel":
-            peer_id = _safe_peer_id(getattr(message, "peer_id", None))
+            peer_id = _raw_peer_id(getattr(message, "peer_id", None))
             if peer_id == logical_row.chat_id and (sender_id is None or sender_id == peer_id):
                 sender_id = peer_id
                 sender_kind = "channel"
