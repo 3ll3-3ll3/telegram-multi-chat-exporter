@@ -33,20 +33,22 @@
 当前正式 Production：
 
 ```text
-v0.3.0
-commit: 8e230e33ea928bcf71296e4e5379b097446dbec5
+v0.3.1
+commit: 38b5687038f5ac458571a65820744a7bd325564f
 ```
 
 当前 patch candidate：
 
 ```text
-branch: codex/v0.3.1-runtime-fixes
-PR: #24
+branch: codex/v0.3.2-sender-role-fix
+PR: #26
 ```
 
-`v0.3.0` tag/Release 已正式发布，**不得移动、覆盖、删除或原地重建**。v0.3.1 必须作为新的 patch 版本经过 PR、CI、用户本机/真实账号验收与明确授权后才能 merge/release。
+当前补丁仅用于增强 sender-role 身份恢复与筛选，不是 LoveAV 或 PikPak 专用功能，也不引入任何业务分类。
 
-旧 PR #21 是历史 handoff 分支；其仍有价值的 durable docs 已迁移到当前 v0.3.1 分支，旧状态不得作为当前事实。
+`v0.3.1` tag/Release 已正式发布，**不得移动、覆盖、删除或原地重建**。当前补丁只能按 Issue/branch → PR → CI → 用户本机/真实账号验收 → 明确授权的流程进入后续版本；未经单独授权不得 merge/release。
+
+旧 PR #21 / #24 是历史 handoff/修复分支；其旧状态不得作为当前事实。
 
 ## 3. Session / daemon 所有权
 

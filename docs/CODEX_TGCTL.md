@@ -117,6 +117,10 @@ tgctl messages search --contains "预推免" --limit 100 --jsonl
 
 支持 single/global、contains、regex、sender-id、sender-role、since/until、message-type、topic、has-link、url-domain、cursor、limit。
 
+`--sender-role` 的角色判断基于**查询时 current admin/member snapshot**。当前 sender-role 补丁把 admin 匹配扩展到：当前管理员、当前群主、Telegram 明确标记的匿名管理员，以及 Telegram 明确以当前群组身份发布的消息。它不会把普通成员、`forward_origin` 中的管理员、只有 `post_author` 文字署名的消息或完全无身份依据的 unknown 当成管理员。
+
+性能边界：只有请求显式带 `--sender-role` 时，reader 才允许读取当前管理员快照并启用受限 sender peer 解析。sender entity 解析使用**单次 search 请求内缓存**，同一 peer 最多解析一次，失败也缓存；普通 history、普通 GUI 手动导出、普通域名/contains/regex search 不因这个补丁增加 sender 身份网络请求。
+
 `--regex` 是 Python regex 的本地 bounded filter。默认忽略大小写，`--case-sensitive` 同时控制 contains/regex 的大小写语义。空、非法或超过 512 字符的 regex 返回 `INVALID_ARGUMENT`，并且在 Telegram 请求开始前失败。regex 与 case-sensitive 状态属于 cursor query fingerprint；换 regex 后继续使用旧 cursor 返回 `INVALID_CURSOR`。regex 可与其他筛选组合；legacy schema 不支持 regex。
 
 `--url-domain` 解析真实 hostname；`mypikpak.com.evil.com` 不匹配 `mypikpak.com`。不会访问 URL 或 follow redirect。
@@ -144,9 +148,16 @@ role_basis
 unknown_reason
 ```
 
-v0.3.1 只根据 Telegram 提供的 sender 信息判断身份：`sender`、`from_id`、`peer_id`、`sender_id`、`sender_chat`、`post_author`、`via_bot_id` 等。不得根据正文、链接、群名或昵称猜用户名/身份。
+身份判断只依据 Telegram 提供的结构化 sender 信息：`sender`、`sender_id`、`from_id`、`peer_id`、`sender_chat`、`post_author`、`via_bot_id` 以及 Telegram 暴露的匿名管理员/send-as 标志。不得根据正文、链接、群名或昵称猜用户身份。
 
-可确定时会恢复 user/chat/channel、broadcast channel post、send-as、anonymous admin 等类型；匿名管理员/send-as 不反推隐藏的具体 user id。
+如果消息存在真实 raw sender peer、但实体尚未 hydrated，则**仅在 `--sender-role` search 作用域**允许通过现有 Telegram client 尝试解析一次。解析结果按 peer 在本次请求中缓存；失败后保持 unknown，不会每条消息重复请求。普通 GUI/export/history/search 不启用这项补充解析。
+
+可确定时会恢复 user/chat/channel、broadcast channel post、send-as、anonymous admin 等类型：
+
+- Telegram 明确匿名管理员：`sender_type=anonymous_admin`、`anonymous_admin=true`、`is_admin=true`，不猜具体 user id；
+- Telegram 明确以当前群组身份发送：填写 `posted_as_chat_id`，可以作为 admin 来源参与 `--sender-role admin`，但不声称是哪位具体管理员/群主；
+- `post_author` 只作为 Telegram 展示标签使用，单独出现时不能证明发送者身份；
+- `forward_origin` 始终与实际 `sender` 分离，转发来源中的管理员不能让当前消息匹配 admin sender-role。
 
 Telegram 没有提供足够身份时继续返回 `sender_type=unknown`，并给出例如：
 
@@ -157,8 +168,6 @@ post_author_without_sender_peer
 unsupported_or_unavailable_sender_peer
 telegram_sender_not_provided
 ```
-
-`forward_origin` 与实际 `sender` 始终分开。转发来源不能冒充实际发送者。
 
 ## 10. Forum
 
@@ -252,32 +261,33 @@ Reader 扩展没有扩大 send/forward 授权。
 
 > 找到目标聊天，读取最近 500 条并列出当前 owner/admin；再用 `--url-domain <domain>` 与 `--regex <pattern>` 做 bounded 搜索。只依据结构化 sender/forward 字段，不根据正文猜身份。
 
+> 在目标超级群中用 `--sender-role admin --url-domain <domain>` 做 bounded 只读搜索；统计 actual sender 分类，不把 forward_origin 或 post_author 文本当作管理员身份。
+
 > 搜索 Saved Messages 中最近一个月包含“保研”的内容，只读，不标已读。
 
 > 读取这个 Forum 的 topic 列表并总结指定 topic，不下载媒体。
 
-## 16. v0.3.1 真人只读 E2E
+## 16. 当前 sender-role 补丁真人只读复测
 
-v0.3.1 Candidate 合并/发布前用户本机至少验证：
+正式 v0.3.1 已发布；当前 `codex/v0.3.2-sender-role-fix` 是基于 v0.3.1 的小型 Candidate 补丁，不得覆盖现有 v0.3.1 Release。
 
-1. account get 与 all dialog types，包括 private/bot/Saved/archive；
-2. chats get、owner/admin；
-3. 最近 500 history；
-4. contains/regex/url-domain/sender-id/current sender-role；
-5. structured sender / anonymous admin/send-as/unknown_reason；
-6. history/search 连续分页无重复，cursor 跨查询 → `INVALID_CURSOR`；
-7. since/until；
-8. Saved Messages；
-9. MESSAGE_NOT_FOUND；
-10. AMBIGUOUS_CHAT；
-11. NOT_A_FORUM；
-12. media metadata-only 不产生文件；media plan 第一次 `DOWNLOAD_CONFIRMATION_REQUIRED` 且不下载；
-13. send/forward 只做 dry-run；
-14. 单 GUI 空闲关闭、刷新后关闭、0 条 current-unread export 后关闭；
-15. 两个 GUI 依次关闭，随后 `tgctl status` 仍可用；
-16. 正常关闭新日志段中 Fatal/Traceback/un-awaited/Task-destroyed 计数为 0；
-17. sender unknown 同一 bounded 样本做修复前后分类统计；
-18. log/stdout privacy audit 只汇报计数，不输出真实日志正文。
+自动化通过后，建议在用户本机对 Svip 做一次**只读 bounded**复测：
+
+```powershell
+tgctl messages search --chat <Svip-ref> --sender-role admin --url-domain mypikpak.com --limit 500 --json
+```
+
+只比较聚合统计：总匹配数，以及 `user/current-admin/current-owner/anonymous_admin/current-chat-send-as/unknown` 等分类数量。不要把真实 message body、URL、caption 或 media filename 粘贴到 Issue/PR/日志。
+
+重点验收：
+
+1. sender peer 存在但 entity 未加载时，`--sender-role` search 能受限恢复；同 peer 不重复请求；
+2. 当前管理员/群主能匹配 admin；
+3. Telegram 明确匿名管理员能匹配 admin，但不暴露/猜测个人 user id；
+4. 当前群 send-as 能匹配 admin，并正确填写 `posted_as_chat_id`；
+5. 普通成员、forward_origin 管理员、仅 post_author 文本、完全 unknown 不匹配 admin；
+6. 普通 GUI 手动导出与普通 history/search 不出现本补丁新增的 sender 解析请求；
+7. no mark-read / no media download / no real send-forward。
 
 默认不执行真实 send/forward、mark-read、media confirm download、群管理、FloodWait 压测或 Session reset。需要这些写操作必须单独取得用户确认。
 

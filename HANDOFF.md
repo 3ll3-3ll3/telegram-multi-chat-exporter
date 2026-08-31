@@ -2,40 +2,35 @@
 
 > 当前开发/发布交接快照。任何 Agent 接手前先读 `AGENTS.md`，再读本文件；GitHub 当前事实优先。
 
-更新时间：2026-08-30
+更新时间：2026-08-31
 
 # Current Project State
 
 - Repository: `3ll3-3ll3/tg-exporter`
-- Current Production before this release completes: **v0.3.0**
-- Production commit/tag: `8e230e33ea928bcf71296e4e5379b097446dbec5` / `v0.3.0`
-- Release target: **v0.3.1**
-- Branch: `codex/v0.3.1-runtime-fixes`
-- PR: **#24**
-- v0.3.0 tag/Release must never be moved, overwritten, deleted or rebuilt in place.
+- Current Production: **v0.3.1**
+- Production commit/tag: `38b5687038f5ac458571a65820744a7bd325564f` / `v0.3.1`
+- Formal Release: `https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.3.1`
+- Current patch branch: `codex/v0.3.2-sender-role-fix`
+- Patch purpose: a small sender-identification / `--sender-role` filtering fix on top of v0.3.1. It is **not** a broad reader redesign.
+- Do not move, overwrite, delete or rebuild the existing v0.3.1 tag/Release in place.
+- This branch may produce CI Candidate artifacts only. Do not publish a Release unless separately authorized.
 
-## Explicit v0.3.1 release authorization
+# Why this patch exists
 
-On 2026-08-30 the user explicitly instructed: publish the current v0.3.1 as a formal Release **without waiting for the remaining real Windows / real Telegram human E2E**.
+Some real supergroup messages can expose Telegram sender evidence through raw peer fields even when the sender entity is not hydrated. v0.3.1 could still leave those rows as `sender_type=unknown`, which also caused `tgctl messages search --sender-role admin ...` to miss some current admin/owner/anonymous/send-as sources.
 
-Record this accurately:
+The patch is intentionally narrow:
 
-- human E2E is **WAIVED for v0.3.1 only**;
-- it is **not PASS** and must never be reported as PASS;
-- automated CI/package gates are green;
-- residual real-environment risk is knowingly accepted for this release;
-- future releases return to the default human-E2E gate unless the user explicitly waives it again.
+1. before returning `unknown`, inspect existing Telethon message sender evidence including `sender_id`, `sender`, `from_id`, `peer_id`, `sender_chat`, `post_author` and explicit anonymous-admin indicators;
+2. only while a `messages.search` request uses `--sender-role`, allow bounded sender-entity recovery;
+3. cache sender resolution per search request, including failed lookups, so the same peer is never resolved once per message;
+4. classify Telegram-explicit anonymous administrator as `anonymous_admin`, `anonymous_admin=true`, `is_admin=true`, without guessing a user id;
+5. classify Telegram-explicit current-chat send-as with `posted_as_chat_id=<current chat>` and allow it to match the admin role without claiming a specific owner/admin identity;
+6. keep `forward_origin` separate from the actual sender; a forwarded admin is not an actual admin sender;
+7. a textual `post_author` alone is not identity evidence;
+8. messages with no sender evidence remain `unknown`.
 
-# Why v0.3.1 exists
-
-v0.3.1 fixes four main v0.3.0 acceptance findings without expanding Telegram write permissions:
-
-1. packaged `tgctl messages search --url-domain ...` could fail during frozen IDNA normalization;
-2. normal GUI close could hit `RuntimeError: Event loop stopped before Future completed`;
-3. sender/owner diagnostics were too coarse for real bounded samples;
-4. the required acceptance matrix included regex search but v0.3.0 had no regex parameter.
-
-# Runtime / safety invariants
+# Performance / safety invariants
 
 ```text
 TGExporter GUI ─┐
@@ -45,22 +40,23 @@ tgctl / Codex ─┘
 
 - daemon remains the normal single Telegram Session owner;
 - GUI/tgctl do not fall back to direct SQLiteSession;
-- GUI close detaches its own lease and must not kill the shared daemon;
+- ordinary GUI/manual export does not enter sender-role recovery mode and gains no new identity network requests from this patch;
+- ordinary history and search without `--sender-role` do not enable the patch's request-local entity resolver;
+- only `--sender-role` may read one current admin snapshot and perform bounded/cached sender resolution;
+- current-unread, Session ownership, IPC, daemon lifecycle, GUI export format/directories and media behavior are unchanged;
 - reader remains bounded and default read-only;
-- ordinary reader media behavior remains metadata-only;
-- real send/forward keep dry-run/caps/no-auto-retry semantics;
-- current-unread keeps the per-group export-start frozen snapshot invariant;
-- ordinary logs/Issues/PRs must not expose API hash, phone/OTP/2FA, Session content, IPC secret, access hash/file reference, message body/caption/URL/media filename.
+- this patch does not authorize real send/forward, mark-read, media download confirmation, group mutation, FloodWait stress or Session reset;
+- ordinary logs/Issues/PRs must not expose API hash, phone/OTP/2FA, Session contents, IPC secret, access hash/file reference, message body/caption/URL/media filename.
 
-# v0.3.1 automated evidence
+# Automated evidence before documentation closeout
 
-Final green PR-head Candidate before the authorization-only release documentation update:
+Green branch-head runtime validation:
 
 ```text
-head: e5ebe531ad132d5b501e014ab8616b48119f2bec
-Windows PR run: 33311934536 = SUCCESS
-full pytest: 140 passed in 1.90s
-focused v0.3.1 regressions: 45 passed in 0.58s
+head: c79ef449d29a89e520d9d9a74bd267b277b62e20
+Windows run: 33369455891 = SUCCESS
+full pytest: 147 passed in 2.07s
+focused v0.3.1 regressions: 45 passed in 0.60s
 compileall: PASS
 git diff --check: PASS
 imports: PASS
@@ -68,46 +64,34 @@ source search-filter smoke: PASS
 one-file GUI build: PASS
 portable GUI build: PASS
 tgctl build: PASS
-packaged standalone + portable domain+regex smoke: PASS
-packaged standalone + portable SESSION_BUSY JSON/native exit=8: PASS
+packaged search-filter smoke: PASS
+packaged SESSION_BUSY JSON/native exit=8: PASS
 packaged GUI/tgctl smoke: PASS
 tracked-worktree clean: PASS
 ```
 
-Candidate artifact from that head:
+Candidate artifact from that runtime head:
 
 ```text
-artifact: 9732308884
-outer ZIP SHA-256: 7cb2931602ff8cf2d3e7223c33c0920f81a3e12faa589a34f471ec545f9cfb88
-TGExporter-v0.3.1-windows-x64.exe: 25b66f41622ef79634b1e13de30d7271d507939ae040b36c7aa9fd937c461ebf
-TGExporter-v0.3.1-windows-x64-portable.zip: ad4db31f4aa21adae7d8c19457325e44569f883f39e59cb701760953a79bb4ca
-tgctl.exe: cb539add525fdc899629d492429bc0436ee63af789acf33f95a00ae4c9f9ba34
+artifact: 9749607042
+outer artifact ZIP SHA-256: 31437efc25d573452a77c0f604805533b0a8adc8dea1792024d0877fabdd8510
+TGExporter-v0.3.1-windows-x64.exe: 74af0ebe0805a445849c39cf8bbb8240f5a2f9a48875c7e122f1bc8229c40601
+TGExporter-v0.3.1-windows-x64-portable.zip: 0dbc5194b6aa23a4be3da076b2638fd22ba662bcaefbb2aa31f686d26c0f1f37
+tgctl.exe: 0fd0bc8c51dd502b9ff52f10fcdb6777f4f2823e781a07e0f64438675482e08d
 ```
 
-These are Candidate hashes only. Formal Release must be rebuilt from merged `main`.
+These are Candidate hashes only. Documentation commits after this snapshot require a new final branch/PR-head CI; report hashes from the final green head, not these earlier values.
 
-# Human/local checks not performed before v0.3.1 release
+# Real Telegram check still recommended
 
-Because the user explicitly waived them for this release, these remain **unverified**, not failed and not passed:
+The patch has not been validated against the user's live Svip sample from this environment. A post-patch **read-only** bounded comparison is recommended after the final Candidate is fixed:
 
-- packaged real-chat domain + regex search;
-- idle/refresh/zero-unread real GUI close scenarios;
-- two real GUI instances closed sequentially with daemon/tgctl survival;
-- new real `app.log` segment counts for Fatal/Traceback/un-awaited/Task-destroyed;
-- post-fix real bounded sender aggregate counts.
+```powershell
+tgctl messages search --chat <Svip-ref> --sender-role admin --url-domain mypikpak.com --limit 500 --json
+```
 
-No real send/forward, mark-read, confirmed media download, group mutation, FloodWait stress or Session reset was performed as part of this release authorization.
-
-# Current release workflow
-
-1. commit this one-release waiver + final release notes/workflow hardening on PR #24;
-2. require one final green PR-head Windows CI;
-3. mark PR #24 Ready;
-4. merge to main with release commit message `release: v0.3.1`;
-5. formal Release workflow rebuilds from merged main;
-6. verify `v0.3.1` tag target, Release state, four assets and SHA256SUMS;
-7. do not alter v0.3.0.
+Only compare aggregate counts such as total matches and sender categories. Do not print real message bodies/URLs/media names into Issues/PRs/logs. No write action or media download is needed.
 
 # Resume order
 
-Read `AGENTS.md` → `HANDOFF.md` → `README.md` → `docs/KNOWN_ISSUES.md` → `docs/releases/v0.3.1.md` → architecture/security/release docs. Then verify GitHub current main, latest Release, PR #24 and latest workflow. GitHub facts override this snapshot.
+Read `AGENTS.md` → `HANDOFF.md` → `docs/CODEX_TGCTL.md` → verify GitHub `main`, latest Release, current patch branch/PR and latest workflow. GitHub facts override this snapshot.
