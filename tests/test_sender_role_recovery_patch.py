@@ -129,6 +129,19 @@ def member_role(user_id: int) -> ParticipantInfo:
     )
 
 
+async def sender_in_scope(
+    reader: PersonalAccountReaderV3,
+    row: DialogInfo,
+    message: FakeMessage,
+    snapshot: dict[int, ParticipantInfo],
+    available: bool,
+    *,
+    role: str | None = "admin",
+):
+    with reader.sender_role_filter_scope(role):
+        return await reader._sender_info(row, message, snapshot, available)
+
+
 def test_unloaded_sender_peer_is_resolved_once_per_role_search_request() -> None:
     client = FakeClient()
     reader = make_reader(client)
@@ -144,9 +157,13 @@ def test_unloaded_sender_peer_is_resolved_once_per_role_search_request() -> None
     first = FakeMessage(from_id=types.PeerUser(user_id=user_id), sender_id=user_id)
     second = FakeMessage(from_id=types.PeerUser(user_id=user_id), sender_id=user_id)
 
-    with reader.sender_role_filter_scope("admin"):
-        sender1 = asyncio.run(reader._sender_info(row, first, {user_id: role}, True))
-        sender2 = asyncio.run(reader._sender_info(row, second, {user_id: role}, True))
+    async def scenario():
+        with reader.sender_role_filter_scope("admin"):
+            sender1 = await reader._sender_info(row, first, {user_id: role}, True)
+            sender2 = await reader._sender_info(row, second, {user_id: role}, True)
+            return sender1, sender2
+
+    sender1, sender2 = asyncio.run(scenario())
 
     assert client.get_entity_calls == [user_id]
     assert first.get_sender_calls == 0
@@ -170,8 +187,7 @@ def test_anonymous_admin_matches_admin_role_without_guessing_user() -> None:
         anonymous_admin=True,
     )
 
-    with reader.sender_role_filter_scope("admin"):
-        sender = asyncio.run(reader._sender_info(row, message, {}, False))
+    sender = asyncio.run(sender_in_scope(reader, row, message, {}, False))
 
     assert sender.sender_type == "anonymous_admin"
     assert sender.anonymous_admin is True
@@ -193,8 +209,7 @@ def test_current_chat_send_as_matches_admin_role_but_not_specific_owner() -> Non
         sender_id=chat_id,
     )
 
-    with reader.sender_role_filter_scope("admin"):
-        sender = asyncio.run(reader._sender_info(row, message, {}, False))
+    sender = asyncio.run(sender_in_scope(reader, row, message, {}, False))
 
     assert sender.sender_type == "channel"
     assert sender.posted_as_chat_id == chat_id
@@ -219,8 +234,7 @@ def test_normal_member_does_not_match_admin_role() -> None:
     role = member_role(user_id)
     message = FakeMessage(from_id=types.PeerUser(user_id=user_id), sender_id=user_id)
 
-    with reader.sender_role_filter_scope("admin"):
-        sender = asyncio.run(reader._sender_info(row, message, {user_id: role}, True))
+    sender = asyncio.run(sender_in_scope(reader, row, message, {user_id: role}, True))
 
     assert sender.sender_type == "user"
     assert sender.is_admin is False
@@ -247,15 +261,17 @@ def test_forward_origin_admin_is_not_treated_as_actual_admin_sender() -> None:
     reader = make_reader()
     message = FakeMessage(fwd_from=fwd)
 
-    with reader.sender_role_filter_scope("admin"):
-        sender = asyncio.run(reader._sender_info(row, message, {admin_user_id: admin_role(admin_user_id)}, True))
+    sender = asyncio.run(
+        sender_in_scope(reader, row, message, {admin_user_id: admin_role(admin_user_id)}, True)
+    )
 
     origin = _forward_payload(message)
     assert sender.sender_type == "unknown"
     assert sender.sender_id is None
     assert sender.unknown_reason == "forwarded_message_without_actual_sender"
     assert _role_matches(SimpleNamespace(sender=sender), "admin") is False
-    assert origin is not None and origin["origin_id"] == admin_user_id
+    assert origin is not None
+    assert origin["origin_type"] == "user"
 
 
 def test_completely_missing_sender_stays_unknown() -> None:
@@ -268,8 +284,7 @@ def test_completely_missing_sender_stays_unknown() -> None:
     reader = make_reader()
     message = FakeMessage()
 
-    with reader.sender_role_filter_scope("admin"):
-        sender = asyncio.run(reader._sender_info(row, message, {}, True))
+    sender = asyncio.run(sender_in_scope(reader, row, message, {}, True))
 
     assert sender.sender_type == "unknown"
     assert sender.sender_id is None
@@ -285,9 +300,13 @@ def test_non_role_search_scope_adds_no_admin_snapshot_or_cached_sender_resolutio
     row = DialogInfo(chat_id=chat_id, title="Synthetic Supergroup", username=None, dialog_type="supergroup")
     message = FakeMessage(from_id=types.PeerUser(user_id=9107), sender_id=9107)
 
-    with reader.sender_role_filter_scope(None):
-        snapshot, available = asyncio.run(reader._admin_snapshot(row, types.PeerChannel(channel_id=bare_chat_id)))
-        sender = asyncio.run(reader._sender_info(row, message, {}, False))
+    async def scenario():
+        with reader.sender_role_filter_scope(None):
+            snapshot, available = await reader._admin_snapshot(row, types.PeerChannel(channel_id=bare_chat_id))
+            sender = await reader._sender_info(row, message, {}, False)
+            return snapshot, available, sender
+
+    snapshot, available, sender = asyncio.run(scenario())
 
     assert snapshot == {}
     assert available is False
