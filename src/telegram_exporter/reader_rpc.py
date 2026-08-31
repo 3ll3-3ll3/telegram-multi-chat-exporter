@@ -78,23 +78,28 @@ async def dispatch_reader(server: Any, method: str, params: dict[str, Any]) -> A
         if method == "messages.search" and params.get("schema") == "v3":
             sender_id = params.get("sender_id")
             topic_id = params.get("topic_id")
-            return await search_messages_page(
-                reader,
-                chat=params.get("chat"),
-                contains=params.get("contains"),
-                regex=params.get("regex"),
-                sender_id=int(sender_id) if sender_id is not None else None,
-                sender_role=params.get("sender_role"),
-                since=_parse_iso(params.get("since")),
-                until=_parse_iso(params.get("until")),
-                message_type=params.get("message_type"),
-                topic_id=int(topic_id) if topic_id is not None else None,
-                has_link=str(params.get("has_link") or "all"),
-                url_domain=params.get("url_domain"),
-                cursor=params.get("cursor"),
-                limit=int(params.get("limit", 100)),
-                case_sensitive=bool(params.get("case_sensitive", False)),
-            )
+            sender_role = params.get("sender_role")
+            # This scope is the only place the sender-role patch enables
+            # current-admin snapshot work and request-local sender recovery.
+            # Ordinary history, GUI export and non-role searches do not opt in.
+            with reader.sender_role_filter_scope(sender_role):
+                return await search_messages_page(
+                    reader,
+                    chat=params.get("chat"),
+                    contains=params.get("contains"),
+                    regex=params.get("regex"),
+                    sender_id=int(sender_id) if sender_id is not None else None,
+                    sender_role=sender_role,
+                    since=_parse_iso(params.get("since")),
+                    until=_parse_iso(params.get("until")),
+                    message_type=params.get("message_type"),
+                    topic_id=int(topic_id) if topic_id is not None else None,
+                    has_link=str(params.get("has_link") or "all"),
+                    url_domain=params.get("url_domain"),
+                    cursor=params.get("cursor"),
+                    limit=int(params.get("limit", 100)),
+                    case_sensitive=bool(params.get("case_sensitive", False)),
+                )
         if method == "messages.get" and params.get("schema") == "v3":
             return await reader.messages_get_v3(
                 params.get("chat", ""),
