@@ -9,9 +9,9 @@ from telethon.utils import get_peer_id
 
 from telegram_exporter.cursor_codec import CursorCodec
 from telegram_exporter.reader_models import DialogInfo, ParticipantInfo
-from telegram_exporter.reader_runtime import PersonalAccountReaderV3
+from telegram_exporter.reader_runtime import PersonalAccountReaderV3, _raw_peer_id
 from telegram_exporter.reader_search import _role_matches
-from telegram_exporter.reader_service import _forward_payload, _safe_peer_id
+from telegram_exporter.reader_service import _forward_payload
 
 
 def marked_channel_id(bare_id: int) -> int:
@@ -25,7 +25,7 @@ class FakeClient:
         self.participant_rpc_calls = 0
 
     async def get_entity(self, key):
-        marked = _safe_peer_id(key)
+        marked = _raw_peer_id(key)
         if marked is None and isinstance(key, int):
             marked = int(key)
         self.get_entity_calls.append(int(marked or 0))
