@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any
+from typing import Any, Iterator
 
 from telethon.errors import RPCError
 from telethon.tl import functions, types
@@ -52,12 +54,45 @@ class PersonalAccountReaderV3(PersonalAccountReader):
     def __init__(self, telegram_service: Any, **kwargs: Any):
         super().__init__(telegram_service, **kwargs)
         self._owner_visibility_hint: dict[int, str] = {}
+        self._sender_role_search: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"tg_exporter_sender_role_search_{id(self)}",
+            default=None,
+        )
+
+    @contextmanager
+    def sender_role_filter_scope(self, sender_role: str | None) -> Iterator[None]:
+        """Bound extra sender work to one advanced-search request.
+
+        The scope is entered for every v3 messages.search call. A non-empty
+        sender role enables the current-admin snapshot and a request-local
+        sender entity cache. Ordinary searches keep both disabled, while
+        history/get/chat operations remain on their existing code paths.
+        """
+
+        token = self._sender_role_search.set(
+            {
+                "active": True,
+                "sender_role": sender_role,
+                "sender_cache": {},
+            }
+        )
+        try:
+            yield
+        finally:
+            self._sender_role_search.reset(token)
 
     async def _admin_snapshot(
         self,
         row: DialogInfo,
         entity: Any,
     ) -> tuple[dict[int, ParticipantInfo], bool]:
+        search_context = self._sender_role_search.get()
+        if search_context is not None and search_context.get("active") and not search_context.get("sender_role"):
+            # Advanced search only needs participant/admin network work when a
+            # sender-role filter was explicitly requested. Other reader calls
+            # do not enter this scope and therefore retain existing behavior.
+            return {}, False
+
         # Historical messages may come from a legacy Basic Group while the
         # logical chat is the current Supergroup. Current owner/admin role must
         # always be evaluated on the current logical entity, then delegate to
@@ -157,39 +192,89 @@ class PersonalAccountReaderV3(PersonalAccountReader):
         role_snapshot: dict[int, ParticipantInfo],
         role_available: bool,
     ) -> SenderInfo:
+        search_context = self._sender_role_search.get()
+        role_filter_active = bool(search_context and search_context.get("sender_role"))
+        sender_cache: dict[int, Any] | None = (
+            search_context.get("sender_cache") if role_filter_active and search_context is not None else None
+        )
+
         sender = getattr(message, "sender", None)
         raw_from = getattr(message, "from_id", None)
         sender_chat = getattr(message, "sender_chat", None)
         raw_sender_peer = sender_chat or raw_from
         sender_id_property = getattr(message, "sender_id", None)
+        post_author = getattr(message, "post_author", None)
 
         if sender is None and sender_chat is not None:
             sender = sender_chat
-        if sender is None:
-            try:
-                sender = await message.get_sender()
-            except Exception:
-                sender = None
+
+        async def resolve_sender_once(peer: Any) -> Any:
+            if sender_cache is None or peer is None:
+                return None
+            peer_id = _safe_peer_id(peer)
+            if peer_id is None and isinstance(peer, int) and peer:
+                peer_id = int(peer)
+            if peer_id is None:
+                return None
+            if peer_id not in sender_cache:
+                try:
+                    sender_cache[peer_id] = await self.client.get_entity(peer)
+                except Exception:
+                    # Failure is cached too, so the same unresolved peer cannot
+                    # generate one Telegram request per message.
+                    sender_cache[peer_id] = None
+            return sender_cache[peer_id]
+
+        if role_filter_active:
+            # Do not call Message.get_sender() here: it may independently fetch
+            # the same entity per message. Use one request-local cache instead.
+            sender_is_hydrated = sender is not None and not type(sender).__name__.startswith("Peer")
+            resolution_peer = raw_sender_peer
+            if resolution_peer is None and isinstance(sender_id_property, int) and sender_id_property:
+                resolution_peer = int(sender_id_property)
+            current_raw_id = _safe_peer_id(raw_sender_peer)
+            is_current_chat_peer = (
+                current_raw_id is not None
+                and current_raw_id == logical_row.chat_id
+                and logical_row.dialog_type in {"group", "supergroup"}
+            )
+            if not sender_is_hydrated and resolution_peer is not None and not is_current_chat_peer:
+                resolved = await resolve_sender_once(resolution_peer)
+                if resolved is not None:
+                    sender = resolved
+        else:
+            # Preserve the established non-role reader behavior. The patch adds
+            # no new sender-resolution work to ordinary history/search paths.
+            if sender is None:
+                try:
+                    sender = await message.get_sender()
+                except Exception:
+                    sender = None
+
+            raw_kind_for_resolution = _peer_kind(raw_sender_peer)
+            if sender is None and raw_sender_peer is not None and raw_kind_for_resolution in {"chat", "channel"}:
+                try:
+                    sender = await self.client.get_entity(raw_sender_peer)
+                except Exception:
+                    sender = None
 
         raw_kind = _peer_kind(raw_sender_peer)
-        if sender is None and raw_sender_peer is not None and raw_kind in {"chat", "channel"}:
-            # send-as and anonymous-admin peers often have a reliable raw peer
-            # even when Telethon did not hydrate ``message.sender``. Resolve the
-            # chat/channel entity only for display metadata; identity itself is
-            # already established by Telegram's raw peer.
-            try:
-                sender = await self.client.get_entity(raw_sender_peer)
-            except Exception:
-                sender = None
-
         sender_kind = _peer_kind(sender) or raw_kind
         sender_id = _safe_peer_id(sender)
         if sender_id is None:
             sender_id = _safe_peer_id(raw_sender_peer)
         if sender_id is None and isinstance(sender_id_property, int) and sender_id_property:
             sender_id = int(sender_id_property)
-            if sender_kind is None:
-                sender_kind = "user" if sender_id > 0 else None
+
+        # A positive sender id is unambiguously a user. A negative id without
+        # a peer type is only classified when it is the current group itself;
+        # external negative ids remain unknown unless the bounded resolver
+        # hydrated an entity above.
+        if sender_kind is None and sender_id is not None:
+            if sender_id > 0:
+                sender_kind = "user"
+            elif sender_id == logical_row.chat_id and logical_row.dialog_type in {"group", "supergroup"}:
+                sender_kind = "chat" if logical_row.dialog_type == "group" else "channel"
 
         # Broadcast channel posts commonly omit from_id. Telethon may still
         # expose a negative sender_id property, so the peer_id check must run
@@ -202,10 +287,30 @@ class PersonalAccountReaderV3(PersonalAccountReader):
                 sender_kind = "channel"
 
         posted_as = sender_id if sender_kind in {"chat", "channel"} else None
-        anonymous = bool(
+        current_chat_sender = bool(
             posted_as is not None
             and logical_row.dialog_type in {"group", "supergroup"}
             and posted_as == logical_row.chat_id
+        )
+        explicit_anonymous_flag = any(
+            getattr(message, name, False) is True
+            for name in ("anonymous_admin", "is_anonymous_admin")
+        )
+        # Telethon's real-world anonymous-admin representation commonly uses
+        # from_id=current supergroup plus post_author, without a sender_chat.
+        # post_author alone is never sufficient; the current-group peer is the
+        # identity evidence.
+        anonymous = bool(
+            current_chat_sender
+            and (
+                explicit_anonymous_flag
+                or (
+                    sender_chat is None
+                    and raw_from is not None
+                    and isinstance(post_author, str)
+                    and bool(post_author)
+                )
+            )
         )
 
         if anonymous:
@@ -220,9 +325,8 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             sender_type = "unknown"
 
         role = role_snapshot.get(int(sender_id or 0)) if sender_type == "user" and sender_id is not None else None
-        post_author = getattr(message, "post_author", None)
         display_name = _display_name(sender)
-        if display_name is None and posted_as == logical_row.chat_id:
+        if display_name is None and current_chat_sender:
             display_name = logical_row.title
 
         unknown_reason = None
@@ -234,7 +338,7 @@ class PersonalAccountReaderV3(PersonalAccountReader):
                 unknown_reason = "forwarded_message_without_actual_sender"
             elif isinstance(post_author, str) and post_author:
                 unknown_reason = "post_author_without_sender_peer"
-            elif raw_sender_peer is not None:
+            elif raw_sender_peer is not None or (isinstance(sender_id_property, int) and sender_id_property):
                 unknown_reason = "unsupported_or_unavailable_sender_peer"
             else:
                 unknown_reason = "telegram_sender_not_provided"
@@ -245,10 +349,18 @@ class PersonalAccountReaderV3(PersonalAccountReader):
             is_admin = role.is_admin if role is not None else (False if role_available else None)
             admin_title = role.admin_title if role is not None else None
         elif anonymous:
-            role_basis = "telegram_anonymous_admin"
+            # During sender-role filtering, expose the admin truth in the same
+            # role basis understood by the existing matcher. Outside that
+            # bounded search scope, preserve the richer Telegram-specific basis.
+            role_basis = "current_snapshot" if role_filter_active else "telegram_anonymous_admin"
             is_creator = None
             is_admin = True
             admin_title = str(post_author) if isinstance(post_author, str) and post_author else None
+        elif current_chat_sender:
+            role_basis = "current_snapshot" if role_filter_active else "telegram_current_chat_sender"
+            is_creator = None
+            is_admin = True
+            admin_title = None
         elif sender_type in {"chat", "channel"}:
             role_basis = "telegram_sender_peer"
             is_creator = None
