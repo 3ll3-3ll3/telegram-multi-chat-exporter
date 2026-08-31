@@ -7,56 +7,42 @@
 # Current Project State
 
 - Repository: `3ll3-3ll3/tg-exporter`
-- Current Production: **v0.3.1**
-- Production commit/tag: `38b5687038f5ac458571a65820744a7bd325564f` / `v0.3.1`
-- Formal Release: `https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.3.1`
-- Current patch branch: `codex/v0.3.2-sender-role-fix`
-- Patch purpose: a small sender-identification / `--sender-role` filtering fix on top of v0.3.1. It is **not** a broad reader redesign.
-- Do not move, overwrite, delete or rebuild the existing v0.3.1 tag/Release in place.
-- This branch may produce CI Candidate artifacts only. Do not publish a Release unless separately authorized.
+- Current Production: **v0.3.2**
+- Production release commit/tag: `79649668b9b45fad2783a0f8c6cc673205a9266a` / `v0.3.2`
+- Formal Release: `https://github.com/3ll3-3ll3/tg-exporter/releases/tag/v0.3.2`
+- Release PR: `#26` / source branch `codex/v0.3.2-sender-role-fix` / **merged**
+- Current active candidate: **none for v0.3.2**
+- Historical `v0.3.1` tag/Release remains immutable and was not moved or overwritten.
+- A post-release docs-only main commit may sit after the release commit; Production binaries and the `v0.3.2` tag stay anchored to `79649668...`.
 
-# Why this patch exists
+# What v0.3.2 shipped
 
-Some real supergroup messages can expose Telegram sender evidence through raw peer fields even when the sender entity is not hydrated. v0.3.1 could still leave those rows as `sender_type=unknown`, which also caused `tgctl messages search --sender-role admin ...` to miss some current admin/owner/anonymous/send-as sources.
+v0.3.2 is a narrow sender-identification / `--sender-role` filtering patch on top of v0.3.1. It is **not** a broad reader redesign and is not LoveAV/PikPak-specific.
 
-The patch is intentionally narrow:
+The shipped behavior:
 
-1. before returning `unknown`, inspect existing Telethon message sender evidence including `sender_id`, `sender`, `from_id`, `peer_id`, `sender_chat`, `post_author` and explicit anonymous-admin indicators;
-2. only while a `messages.search` request uses `--sender-role`, allow bounded sender-entity recovery;
-3. cache sender resolution per search request, including failed lookups, so the same peer is never resolved once per message;
-4. classify Telegram-explicit anonymous administrator as `anonymous_admin`, `anonymous_admin=true`, `is_admin=true`, without guessing a user id;
-5. classify Telegram-explicit current-chat send-as with `posted_as_chat_id=<current chat>` and allow it to match the admin role without claiming a specific owner/admin identity;
-6. keep `forward_origin` separate from the actual sender; a forwarded admin is not an actual admin sender;
-7. a textual `post_author` alone is not identity evidence;
-8. messages with no sender evidence remain `unknown`.
+1. before returning `unknown`, use Telegram-structured sender evidence including raw peer fields;
+2. only a `messages.search` request with `--sender-role` may enable bounded sender-entity recovery;
+3. cache sender resolution per request, including failed lookups, so one peer is not fetched once per message;
+4. Telegram-explicit anonymous administrator → `sender_type=anonymous_admin`, `anonymous_admin=true`, `is_admin=true`, without guessing a user id;
+5. Telegram-explicit current-chat send-as records the chat identity and can match admin role without claiming a specific individual;
+6. current admin/owner matching still uses Telegram participant/admin truth;
+7. `forward_origin` stays separate and cannot make the actual sender an admin;
+8. textual `post_author` alone is not identity evidence;
+9. no sender evidence still returns `unknown`;
+10. ordinary GUI/manual export, ordinary history, and searches without `--sender-role` do not enable the patch's additional sender resolver.
 
-# Performance / safety invariants
+Current-unread, Session ownership, IPC, daemon lifecycle, GUI export format/directories and media behavior are unchanged.
 
-```text
-TGExporter GUI ─┐
-               ├─ authenticated Windows Named Pipe → TG daemon → Telethon → one user Session
-tgctl / Codex ─┘
-```
+# Final PR validation
 
-- daemon remains the normal single Telegram Session owner;
-- GUI/tgctl do not fall back to direct SQLiteSession;
-- ordinary GUI/manual export does not enter sender-role recovery mode and gains no new identity network requests from this patch;
-- ordinary history and search without `--sender-role` do not enable the patch's request-local entity resolver;
-- only `--sender-role` may read one current admin snapshot and perform bounded/cached sender resolution;
-- current-unread, Session ownership, IPC, daemon lifecycle, GUI export format/directories and media behavior are unchanged;
-- reader remains bounded and default read-only;
-- this patch does not authorize real send/forward, mark-read, media download confirmation, group mutation, FloodWait stress or Session reset;
-- ordinary logs/Issues/PRs must not expose API hash, phone/OTP/2FA, Session contents, IPC secret, access hash/file reference, message body/caption/URL/media filename.
-
-# Automated evidence before documentation closeout
-
-Green branch-head runtime validation:
+Final release-ready PR head:
 
 ```text
-head: c79ef449d29a89e520d9d9a74bd267b277b62e20
-Windows run: 33369455891 = SUCCESS
+head: b86966544daf6be8b10a5324af2f6368b722d211
+Windows PR run: 33396287090 = SUCCESS
 full pytest: 147 passed in 2.07s
-focused v0.3.1 regressions: 45 passed in 0.60s
+focused v0.3.1 baseline regressions: 45 passed in 0.65s
 compileall: PASS
 git diff --check: PASS
 imports: PASS
@@ -70,28 +56,56 @@ packaged GUI/tgctl smoke: PASS
 tracked-worktree clean: PASS
 ```
 
-Candidate artifact from that runtime head:
+Final v0.3.2 Candidate from that head:
 
 ```text
-artifact: 9749607042
-outer artifact ZIP SHA-256: 31437efc25d573452a77c0f604805533b0a8adc8dea1792024d0877fabdd8510
-TGExporter-v0.3.1-windows-x64.exe: 74af0ebe0805a445849c39cf8bbb8240f5a2f9a48875c7e122f1bc8229c40601
-TGExporter-v0.3.1-windows-x64-portable.zip: 0dbc5194b6aa23a4be3da076b2638fd22ba662bcaefbb2aa31f686d26c0f1f37
-tgctl.exe: 0fd0bc8c51dd502b9ff52f10fcdb6777f4f2823e781a07e0f64438675482e08d
+artifact: 9759610996
+outer artifact ZIP SHA-256: ec8defa8bc69168283b47b6846fda8b4645e35585d04046bc70c13653773ff10
+TGExporter-v0.3.2-windows-x64.exe: 3a50b5f4523d3dde15ecf05c7c1778cacdeb71e3c031fb4cfe25c6478fed551a
+TGExporter-v0.3.2-windows-x64-portable.zip: 526b21a6c676f989d889b03078a6bc7ef05c21e14864cd97d326d1bcea882cf6
+tgctl.exe: 98c92eeb0638537198b79f61b3941c1a3cff308a8a60025eba59ac5299d0da40
 ```
 
-These are Candidate hashes only. Documentation commits after this snapshot require a new final branch/PR-head CI; report hashes from the final green head, not these earlier values.
+Candidate hashes are traceability only; Production was rebuilt from merged main.
 
-# Real Telegram check still recommended
+# Formal v0.3.2 Release evidence
 
-The patch has not been validated against the user's live Svip sample from this environment. A post-patch **read-only** bounded comparison is recommended after the final Candidate is fixed:
+```text
+merge/release commit: 79649668b9b45fad2783a0f8c6cc673205a9266a
+Release workflow: 33396907992 = SUCCESS
+tag: v0.3.2 -> 79649668b9b45fad2783a0f8c6cc673205a9266a
+Release id: 379778987
+draft: false
+prerelease: false
+```
+
+Formal Release assets and GitHub-reported SHA-256 digests:
+
+```text
+TGExporter-v0.3.2-windows-x64.exe
+  4a7809b706ad3ce4e6f4acb0f635cda811e34cdac651bd8268c90102e85a9c03
+TGExporter-v0.3.2-windows-x64-portable.zip
+  61017e8ef0a90c6bf17cdbd54bec9f10238fb29bb062ec6eed06a748e582935f
+tgctl.exe
+  28518a3cf15cc7751cafdfa058d2674e25b36d44c65b873c6bdc32bcf3264745
+SHA256SUMS.txt asset digest
+  f4597564152631d706aeb2f226cc3dd8e3e357f327926fde4515b5f9fd21301e
+```
+
+The formal Release workflow rebuilt one-file GUI, portable GUI and tgctl from merged main, re-ran full pytest, import/source search-filter checks, packaged search-filter regression, packaged `SESSION_BUSY` native exit=8, packaged smoke tests, prepared `SHA256SUMS.txt`, and created the Release while refusing to overwrite an existing historical tag/Release.
+
+# Real Telegram status
+
+A bounded read-only live Svip aggregate re-test was recommended but was **not executed** from the build environment. On 2026-08-31 the user explicitly authorized merging PR #26 and publishing v0.3.2 without waiting for that aggregate check. This is not a claim that the live Svip check passed.
+
+Optional post-release read-only comparison:
 
 ```powershell
 tgctl messages search --chat <Svip-ref> --sender-role admin --url-domain mypikpak.com --limit 500 --json
 ```
 
-Only compare aggregate counts such as total matches and sender categories. Do not print real message bodies/URLs/media names into Issues/PRs/logs. No write action or media download is needed.
+Only compare aggregate counts; do not publish real message bodies, URLs or media names. No send/forward/read-ack/media download/group mutation/Session reset is needed.
 
 # Resume order
 
-Read `AGENTS.md` → `HANDOFF.md` → `docs/CODEX_TGCTL.md` → verify GitHub `main`, latest Release, current patch branch/PR and latest workflow. GitHub facts override this snapshot.
+Read `AGENTS.md` → `HANDOFF.md` → `docs/CODEX_TGCTL.md` → verify GitHub `main`, latest Release and latest workflow. GitHub facts override this snapshot.

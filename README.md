@@ -2,7 +2,7 @@
 
 **TG 导出器**：Windows Telegram GUI 导出器 + 本地 `tgctl` 机器接口。
 
-> 当前正式 Release：**v0.3.0**，正式 commit/tag 为 `8e230e33ea928bcf71296e4e5379b097446dbec5` / `v0.3.0`。当前修复开发线是 `codex/v0.3.1-runtime-fixes`；v0.3.1 在真实账号人工复验和用户明确发布授权前只作为 candidate，不创建 Release。
+> 当前正式 Release：**v0.3.2**，正式 release commit/tag 为 `79649668b9b45fad2783a0f8c6cc673205a9266a` / `v0.3.2`。v0.3.2 来自已合并 PR #26；当前没有仍待发布的 v0.3.2 candidate。历史 v0.3.1 tag/Release 保持不变。
 
 历史本地目录继续固定为：
 
@@ -78,6 +78,8 @@ tgctl messages history --chat me --since 2026-08-01 --until 2026-09-01 --jsonl
 Rich message schema 包含安全可得的：结构化 sender、reply、forum topic、forward origin、entities、views、forwards、reactions、poll、service action、media metadata 等。缺失消息仍返回 `MESSAGE_NOT_FOUND`，不会把“查不到”武断解释为“已删除”。
 
 v0.3.1 sender 识别优先使用 Telegram 原始 sender peer 字段；broadcast channel、send-as、anonymous admin 等可确认时恢复正确类型，无法确认时继续 `sender_type=unknown` 并返回 `unknown_reason`。转发来源始终单独保存在 `forward_origin`，不得冒充实际发送者。
+
+v0.3.2 进一步增强 `--sender-role` 搜索：只有显式使用 `--sender-role` 时，才允许读取一次当前管理员快照并对“sender peer 存在但实体未加载”的情况做受限、请求级缓存恢复。同一 peer 不会按消息重复请求；失败后继续保持 unknown。Telegram 明确匿名管理员、明确以当前群身份 send-as 的消息可以匹配 admin role，但不会猜具体个人。普通 GUI 手动导出、普通 history、普通域名/contains/regex 搜索不启用这套额外身份解析。
 
 ### 高级搜索
 
@@ -196,7 +198,7 @@ Agent/Codex 修改前依次阅读：
 6. [`docs/TESTING.md`](docs/TESTING.md)
 7. [`SECURITY.md`](SECURITY.md)
 8. [`docs/CODEX_TGCTL.md`](docs/CODEX_TGCTL.md)
-9. [`docs/releases/v0.3.1.md`](docs/releases/v0.3.1.md) when working on the v0.3.1 patch line.
+9. [`docs/releases/v0.3.2.md`](docs/releases/v0.3.2.md) for the current Production patch release.
 
 开发运行：
 
@@ -211,7 +213,7 @@ python -m telegram_exporter.tgctl dialogs list --limit 20 --json
 
 ## Release
 
-正式 Release 从 GitHub Releases 分发。**v0.3.0 已正式发布且不得移动、覆盖或重写。v0.3.1 当前只产出 candidate；未经真实账号人工复验与用户明确发布授权，不创建 v0.3.1 tag/Release。**
+正式 Release 从 GitHub Releases 分发。**当前正式版是 v0.3.2，release commit/tag 为 `79649668b9b45fad2783a0f8c6cc673205a9266a` / `v0.3.2`；不得移动、覆盖、删除或原地重建。历史 v0.3.1 Release 同样保持不变。**
 
 ## License
 

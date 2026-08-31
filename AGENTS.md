@@ -33,22 +33,16 @@
 当前正式 Production：
 
 ```text
-v0.3.1
-commit: 38b5687038f5ac458571a65820744a7bd325564f
-```
-
-当前 patch candidate：
-
-```text
-branch: codex/v0.3.2-sender-role-fix
+v0.3.2
+commit: 79649668b9b45fad2783a0f8c6cc673205a9266a
 PR: #26
 ```
 
-当前补丁仅用于增强 sender-role 身份恢复与筛选，不是 LoveAV 或 PikPak 专用功能，也不引入任何业务分类。
+PR #26 / `codex/v0.3.2-sender-role-fix` 已合并并发布；当前没有仍待合并的 v0.3.2 candidate。该补丁仅增强 sender-role 身份恢复与筛选，不是 LoveAV 或 PikPak 专用功能，也不引入任何业务分类。
 
-`v0.3.1` tag/Release 已正式发布，**不得移动、覆盖、删除或原地重建**。当前补丁只能按 Issue/branch → PR → CI → 用户本机/真实账号验收 → 明确授权的流程进入后续版本；未经单独授权不得 merge/release。
+`v0.3.2` tag/Release 已正式发布，**不得移动、覆盖、删除或原地重建**。历史 `v0.3.1` tag/Release 同样不得修改。新的功能或修复必须从最新 main 另开分支，经 PR/CI/必要验收/明确授权后进入后续版本。
 
-旧 PR #21 / #24 是历史 handoff/修复分支；其旧状态不得作为当前事实。
+旧 PR #21 / #24 是历史 handoff/修复分支；PR #26 是已发布的 v0.3.2 release PR。它们的旧开发状态不得作为当前事实。
 
 ## 3. Session / daemon 所有权
 
@@ -128,12 +122,15 @@ Reader 独立模型，不机械扩大 GUI `GroupInfo`。分页 default 100 / max
 ## 7. Search / identity truthfulness
 
 - `--url-domain` 只做离线 hostname/IDNA parsing；exact/subdomain 匹配；绝不访问 URL/follow redirect。
-- v0.3.1 `--regex` 是本地 bounded filter；默认忽略大小写，`--case-sensitive` 可切换；pattern max 512；非法/空 pattern 在 Telegram 请求前 `INVALID_ARGUMENT`；regex 与 case state 必须进入 cursor fingerprint。
+- v0.3.1 引入的 `--regex` 是本地 bounded filter；默认忽略大小写，`--case-sensitive` 可切换；pattern max 512；非法/空 pattern 在 Telegram 请求前 `INVALID_ARGUMENT`；regex 与 case state 必须进入 cursor fingerprint。
 - sender/owner/admin 只能依据 Telegram 提供的 peer/participant/admin 数据。
 - 不从正文、链接、昵称、群名、`post_author` 猜具体个人。
 - actual sender 与 `forward_origin` 分开。
 - 无法确认时保留 `sender_type=unknown` + `unknown_reason`，不要伪造身份。
 - role 是查询时 current snapshot，不伪造历史管理员任期。
+- v0.3.2 只有在显式 `--sender-role` 搜索时才允许一次 current admin snapshot 与受限、请求级缓存的 sender entity recovery；普通 GUI/manual export、普通 history、普通 search 不因此增加身份网络请求。
+- Telegram 明确匿名管理员可认定 admin source，但不得猜具体用户；明确以当前群身份 send-as 时记录 chat identity，可匹配 admin role，但不得反推具体管理员。
+- `forward_origin` 中的管理员、仅有 `post_author` 文字、普通成员和完全无身份依据的 unknown 不得误判为 admin sender。
 - `MESSAGE_NOT_FOUND` 只表示 not found/unavailable，不能武断声称“已删除”。
 
 ## 8. Media 与 Telegram 写安全
@@ -160,11 +157,11 @@ Windows ProxyServer 只接受安全 endpoint metadata；携带 auth/query 的输
 
 ## 10. CI / Candidate / Release
 
-v0.3.1 当前自动化 gate 至少包括：
+v0.3.x 当前自动化 gate 至少包括：
 
 ```text
 full pytest
-focused v0.3.1 regressions
+focused v0.3.1 baseline regressions
 compileall
 git diff --check
 GUI + daemon + reader + CLI imports
@@ -179,9 +176,9 @@ tracked-worktree clean
 candidate SHA-256 + Actions artifact
 ```
 
-Mock/CI 不能代替真实 Windows `%APPDATA%` / Telegram 账号 E2E。Candidate artifact 不是 Production。
+Candidate asset naming读取根目录 `VERSION`，不得把新 patch 的 Candidate 继续硬编码成旧版本号。Mock/CI 不能代替真实 Windows `%APPDATA%` / Telegram 账号 E2E。Candidate artifact 不是 Production。
 
-正式 Release 流程：Issue/branch → PR → CI → local human acceptance → 用户明确授权 → merge → Release workflow → 核验 tag/target/assets/SHA。禁止直接 push/force-push main；禁止覆盖历史 Release/tag。
+正式 Release 流程：Issue/branch → PR → CI → local human acceptance（或用户对特定未执行真人项明确豁免）→ 用户明确授权 → merge → Release workflow → 核验 tag/target/assets/SHA。禁止直接 push/force-push main；禁止覆盖历史 Release/tag。
 
 ## 11. 明确非目标
 
