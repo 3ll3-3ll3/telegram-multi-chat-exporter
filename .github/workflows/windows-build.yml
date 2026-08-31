@@ -152,12 +152,15 @@ jobs:
             throw "Repository worktree became dirty during validation"
           }
 
-      - name: Prepare v0.3.1 candidate assets and SHA-256
+      - name: Prepare candidate assets and SHA-256
+        id: candidate
         shell: pwsh
         run: |
+          $tag = (Get-Content VERSION -Raw).Trim()
+          if (-not $tag.StartsWith('v')) { throw 'VERSION must start with v' }
           New-Item -ItemType Directory -Force candidate-assets | Out-Null
-          $exe = ".\candidate-assets\TGExporter-v0.3.1-windows-x64.exe"
-          $zip = ".\candidate-assets\TGExporter-v0.3.1-windows-x64-portable.zip"
+          $exe = ".\candidate-assets\TGExporter-$tag-windows-x64.exe"
+          $zip = ".\candidate-assets\TGExporter-$tag-windows-x64-portable.zip"
           $cli = ".\candidate-assets\tgctl.exe"
           Copy-Item .\dist\onefile\TGExporter.exe $exe
           Copy-Item .\dist\tgctl\tgctl.exe $cli
@@ -170,14 +173,15 @@ jobs:
             "$zipHash  $(Split-Path $zip -Leaf)",
             "$cliHash  $(Split-Path $cli -Leaf)"
           ) | Set-Content -Encoding ascii .\candidate-assets\CANDIDATE_SHA256SUMS.txt
-          Write-Host "TGExporter v0.3.1 candidate SHA-256: $guiHash"
-          Write-Host "Portable v0.3.1 candidate SHA-256: $zipHash"
-          Write-Host "tgctl v0.3.1 candidate SHA-256: $cliHash"
+          Write-Host "TGExporter $tag candidate SHA-256: $guiHash"
+          Write-Host "Portable $tag candidate SHA-256: $zipHash"
+          Write-Host "tgctl $tag candidate SHA-256: $cliHash"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
 
-      - name: Upload v0.3.1 candidate assets
+      - name: Upload candidate assets
         uses: actions/upload-artifact@v4
         with:
-          name: TGExporter-v0.3.1-candidate-windows-x64
+          name: TGExporter-${{ steps.candidate.outputs.tag }}-candidate-windows-x64
           path: candidate-assets/*
           if-no-files-found: error
           retention-days: 30
